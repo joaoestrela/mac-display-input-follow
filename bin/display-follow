@@ -1,0 +1,26 @@
+#!/bin/bash
+# Turn the MSI off in software when the monitor shows another input (windows move to the
+# laptop), and turn it back on when the monitor returns to the Mac's input.
+MAC_INPUT=${MAC_INPUT:-17}         # value the MSI reports for the Mac's port (HDMI 1)
+VENDOR=${VENDOR:-13929} MODEL=${MODEL:-19911}   # MSI MAG322UPF; see `extdisplay list`
+B="${EXTDISPLAY:-$HOME/.local/bin/extdisplay}"
+STATE="$HOME/.local/share/display-follow/display-id"
+
+log() { echo "$(date '+%F %T') $*"; }
+find_id() { "$B" list | awk -v v="$VENDOR" -v m="$MODEL" '$0 ~ "vendor="v" model="m"$" {print $1; exit}'; }
+
+mkdir -p "$(dirname "$STATE")"
+log "started"
+while true; do
+  id=$(find_id)
+  if [ -n "$id" ]; then echo "$id" > "$STATE"; fi
+  input=$("$B" input 2>/dev/null)
+  if [ -n "$input" ]; then
+    if [ "$input" != "$MAC_INPUT" ] && [ -n "$id" ]; then
+      log "monitor on input $input -> disabling display $id" && "$B" off "$id"
+    elif [ "$input" = "$MAC_INPUT" ] && [ -z "$id" ] && [ -s "$STATE" ]; then
+      log "monitor back on input $input -> enabling display $(cat "$STATE")" && "$B" on "$(cat "$STATE")"
+    fi
+  fi
+  sleep 1
+done
