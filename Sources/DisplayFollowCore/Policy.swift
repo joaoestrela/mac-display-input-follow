@@ -13,11 +13,14 @@ public enum Policy {
     ///   - macInput: the input the Mac is connected to.
     ///   - isAway: whether the watcher has already turned this monitor off.
     ///   - activeDisplays: number of active displays right now.
-    public static func decide(input: Int?, macInput: Int, isAway: Bool, activeDisplays: Int) -> Decision {
+    ///   - needsOtherDisplay: whether going away removes this display (disable/mirror) rather than only running hooks.
+    public static func decide(input: Int?, macInput: Int, isAway: Bool, activeDisplays: Int,
+                              needsOtherDisplay: Bool = true) -> Decision {
         guard let input else { return .none }
         if input != macInput {
-            // Never turn off the last active display (e.g. laptop lid closed).
-            return !isAway && activeDisplays > 1 ? .away(input: input) : .none
+            // Never turn off or mirror away the last active display (e.g. laptop lid closed).
+            let allowed = !needsOtherDisplay || activeDisplays > 1
+            return !isAway && allowed ? .away(input: input) : .none
         }
         return isAway ? .back(input: input) : .none
     }

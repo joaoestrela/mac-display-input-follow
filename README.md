@@ -2,10 +2,12 @@
 
 When an external monitor with several inputs is switched away from your Mac, macOS can't tell: the cable is still connected, so your windows stay on a screen you can no longer see.
 
-`display-follow` watches each external monitor's **active input over DDC/CI** and:
+`display-follow` watches each external monitor's **active input over DDC/CI** and, by default:
 
 - **Monitor switched to another input:** turns the external display off in software, as if it were unplugged, so macOS moves every window to the laptop screen.
 - **Monitor switched back to the Mac:** turns the display back on, and macOS moves the windows back.
+
+Each monitor can instead be mirrored onto the laptop screen, or left alone, and can run your own commands on each switch.
 
 It runs as a `launchd` login item and checks the monitors once a second. Each external monitor is followed on its own.
 
@@ -35,7 +37,13 @@ Other targets: `make check` (offline logic checks), `make stop`, `make start`, `
   "ddcLossTimeout" : 30,
   "interval" : 1,
   "monitors" : [
-    { "name" : "MSI MAG322UPF", "vendor" : 13929, "model" : 19911, "serial" : 16843009, "macInput" : 17 }
+    {
+      "name" : "MSI MAG322UPF", "vendor" : 13929, "model" : 19911, "serial" : 16843009,
+      "macInput" : 17,
+      "action" : "disable",
+      "onAway" : "osascript -e 'set volume output muted true'",
+      "onBack" : "osascript -e 'set volume output muted false'"
+    }
   ],
   "wakeGrace" : 5
 }
@@ -45,13 +53,18 @@ Other targets: `make check` (offline logic checks), `make stop`, `make start`, `
 - `confirmReads`: how many reads in a row must agree before acting, so one bad reading can't turn a monitor off. With the defaults, a switch takes effect in about 2 seconds.
 - `wakeGrace`: seconds to wait after the Mac or its displays wake before acting. Polling pauses while the Mac or its displays sleep, so DDC traffic can't keep a monitor awake.
 - `ddcLossTimeout`: seconds without a DDC reply after which a monitor that was turned off is turned back on (for example, when it was powered off). `0` disables this.
-- `macInput`: the input value the monitor reports while showing this Mac. Run `setup` again if you move the Mac to another port.
+- `macInput`: the input value the monitor reports while showing this Mac. Run `setup` again if you move the Mac to another port; it keeps the monitor's `action` and hooks.
+- `action`: what to do while the monitor shows another input.
+  - `disable` (default): turn the display off in software; windows move to the remaining displays.
+  - `mirror`: mirror it onto the built-in display (or another active one); windows gather there. Window positions on the external display are not restored afterwards.
+  - `none`: leave the display alone and only run the hooks. Works with the laptop lid closed.
+- `onAway` / `onBack` (optional): shell commands run with `/bin/sh -c` after the monitor switches away from or back to the Mac. They get `DISPLAY_FOLLOW_EVENT` (`away`/`back`), `DISPLAY_FOLLOW_MONITOR`, `DISPLAY_FOLLOW_PORT` and `DISPLAY_FOLLOW_INPUT`. The watcher doesn't wait for them; non-zero exits are logged.
 
 The watcher reloads the file when it changes; no restart needed. `display-follow status` shows the config next to what the monitor reports now.
 
 ## Safety
 
-A display turned off in software isn't listed by macOS any more, so `display-follow` records each display it turns off in `~/.local/state/display-follow/state.json` (or `$XDG_STATE_HOME`) and turns it back on when:
+A display turned off in software isn't listed by macOS any more, so `display-follow` records each display it turns off or mirrors in `~/.local/state/display-follow/state.json` (or `$XDG_STATE_HOME`) and undoes that when:
 
 - the watcher stops (`make stop`, `make uninstall`, logout, Ctrl-C);
 - the monitor stops answering over DDC for `ddcLossTimeout` seconds;
@@ -68,14 +81,14 @@ A monitor unplugged while off is forgotten; macOS turns it on again when it is r
 | `display-follow run [--dry-run]` | Watch the monitors. `--dry-run` logs decisions without changing displays |
 | `display-follow list` | List online displays with ID, vendor, model, serial and port |
 | `display-follow input` | Read each external monitor's input source (VCP `0x60`). Works while a display is disabled |
-| `display-follow restore` | Turn back on every display `display-follow` turned off |
+| `display-follow restore` | Undo every display `display-follow` turned off or mirrored |
 | `display-follow off <id>` | Turn a display off in software |
 | `display-follow on <id>` | Turn it back on |
 
 ## Caveats
 
-- The display is never turned off if it is the only active one (for example, with the laptop lid closed).
-- Uses private Apple APIs: `CGSConfigureDisplayEnabled` to turn the display on and off, and `IOAVServiceReadI2C`/`IOAVServiceWriteI2C` for DDC. A macOS update could break them. If that happens, the display just stays on as normal.
+- A display is never turned off or mirrored away if it is the only active one (for example, with the laptop lid closed). Hooks still run.
+- Uses private Apple APIs: `CGSConfigureDisplayEnabled` to turn the display on and off, `IOAVServiceReadI2C`/`IOAVServiceWriteI2C` for DDC, and `CoreDisplay_DisplayCreateInfoDictionary` to match monitors to displays. Mirroring uses the public `CGConfigureDisplayMirrorOfDisplay`. A macOS update could break them. If that happens, the display just stays on as normal.
 - Monitors are told apart by their EDID vendor, model and serial number. Identical monitors that report the same serial (many use a placeholder) share one config entry, so they must be connected to the same input number.
 - Each monitor's DDC service is matched to its display through the Apple Silicon port name (`dispextN`) in the IORegistry, which appears in both the DDC service's path and the display's `IODisplayLocation`.
 - If the monitor auto-scans inputs when it sees no signal, it may jump away from the Mac before the Mac turns the display back on. Turn off auto input-select on the monitor.

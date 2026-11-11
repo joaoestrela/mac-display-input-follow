@@ -1,12 +1,23 @@
 import CoreGraphics
 import Foundation
 
-/// Displays this tool has turned off, by port. Kept on disk so a restarted watcher (or `restore`) can
-/// turn them back on: a display that is off is no longer listed, so its ID can't be looked up again.
+/// Displays this tool has turned off or mirrored, by port. Kept on disk so a restarted watcher (or `restore`)
+/// can undo it: a display that is off is no longer listed, so its ID can't be looked up again.
 public struct RuntimeState: Codable, Equatable {
     public var off: [String: CGDirectDisplayID] = [:]
+    public var mirrored: [String: CGDirectDisplayID] = [:]
 
-    public init(off: [String: CGDirectDisplayID] = [:]) { self.off = off }
+    public init(off: [String: CGDirectDisplayID] = [:], mirrored: [String: CGDirectDisplayID] = [:]) {
+        self.off = off; self.mirrored = mirrored
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        off = try c.decodeIfPresent([String: CGDirectDisplayID].self, forKey: .off) ?? [:]
+        mirrored = try c.decodeIfPresent([String: CGDirectDisplayID].self, forKey: .mirrored) ?? [:]
+    }
+
+    public var isEmpty: Bool { off.isEmpty && mirrored.isEmpty }
 }
 
 public enum StateStore {
@@ -32,17 +43,20 @@ public enum StateStore {
         }
     }
 
-    /// Turns every display in the state file back on and clears it. Returns the displays it restored.
+    /// Turns back on (or stops mirroring) every display in the state file and clears it. Returns what it found.
     @discardableResult
-    public static func restoreAll() -> [String: CGDirectDisplayID] {
+    public static func restoreAll() -> RuntimeState {
         let state = load()
-        var failed: [String: CGDirectDisplayID] = [:]
         for (port, id) in state.off.sorted(by: { $0.key < $1.key }) {
-            if Displays.setEnabled(id, true) { log("restored display \(id) [\(port)]") } else { failed[port] = id }
+            // A display that can't be turned on (e.g. unplugged) is dropped too: macOS re-enables it on reconnect.
+            log(Displays.setEnabled(id, true) ? "restored display \(id) [\(port)]"
+                                              : "could not turn on display \(id) [\(port)]; dropping it")
         }
-        // A display that can't be turned on (e.g. unplugged) is dropped too: macOS re-enables it on reconnect.
-        for (port, id) in failed { log("could not turn on display \(id) [\(port)]; dropping it") }
+        for (port, id) in state.mirrored.sorted(by: { $0.key < $1.key }) {
+            log(Displays.setMirror(id, of: nil) ? "stopped mirroring display \(id) [\(port)]"
+                                                : "could not stop mirroring display \(id) [\(port)]; dropping it")
+        }
         save(RuntimeState())
-        return state.off
+        return state
     }
 }

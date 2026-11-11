@@ -42,4 +42,24 @@ public enum Displays {
         }
         return CGCompleteDisplayConfiguration(cfg, .permanently) == .success
     }
+
+    /// Mirrors `id` onto `target`, or stops mirroring when `target` is nil.
+    @discardableResult
+    public static func setMirror(_ id: CGDirectDisplayID, of target: CGDirectDisplayID?) -> Bool {
+        var config: CGDisplayConfigRef?
+        guard CGBeginDisplayConfiguration(&config) == .success, let cfg = config else { return false }
+        guard CGConfigureDisplayMirrorOfDisplay(cfg, id, target ?? kCGNullDirectDisplay) == .success else {
+            CGCancelDisplayConfiguration(cfg)
+            return false
+        }
+        return CGCompleteDisplayConfiguration(cfg, .permanently) == .success
+    }
+
+    public static func isMirroring(_ id: CGDirectDisplayID) -> Bool { CGDisplayMirrorsDisplay(id) != kCGNullDirectDisplay }
+
+    /// Where to mirror `id`: the built-in display if active, otherwise another active display.
+    public static func mirrorTarget(for id: CGDirectDisplayID) -> CGDirectDisplayID? {
+        let others = online().filter { $0.active && $0.id != id && !isMirroring($0.id) }
+        return (others.first(where: \.builtin) ?? others.first)?.id
+    }
 }
