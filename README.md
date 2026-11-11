@@ -27,6 +27,19 @@ make install     # builds display-follow, installs to ~/.local/bin, runs setup i
 
 Other targets: `make check` (offline logic checks), `make stop`, `make start`, `make restart`, `make logs`, `make uninstall`.
 
+### With Homebrew
+
+The formula lives in this repository. The repository is private, so tap it over SSH:
+
+```bash
+brew tap joaoestrela/display-follow git@github.com:joaoestrela/mac-display-input-follow.git
+brew install --HEAD display-follow
+display-follow setup                   # while each monitor shows the Mac
+brew services start display-follow     # logs to $(brew --prefix)/var/log/display-follow.log
+```
+
+`brew upgrade --fetch-HEAD display-follow` picks up new commits. Use either Homebrew or `make install`, not both: two watchers would fight.
+
 ## Configure
 
 `display-follow setup` records each external monitor and the input it is showing right now, so run it while the Mac is on screen. Monitors that don't answer over DDC are skipped. It writes `~/.config/display-follow/config.json` (or `$XDG_CONFIG_HOME/display-follow/config.json`):
