@@ -47,6 +47,7 @@ A small helper in `src/extdisplay.swift`:
 
 ## Caveats
 
+- The display is never turned off if it is the only active one (for example, with the laptop lid closed).
 - Uses private Apple APIs: `CGSConfigureDisplayEnabled` to turn the display on and off, and `IOAVServiceReadI2C`/`IOAVServiceWriteI2C` for DDC. A macOS update could break them. If that happens, the display just stays on as normal.
 - Only one external display is supported. The DDC reader talks to the first `External` AV service.
 - If the monitor auto-scans inputs when it sees no signal, it may jump away from the Mac before the Mac turns the display back on. Turn off auto input-select on the monitor.
