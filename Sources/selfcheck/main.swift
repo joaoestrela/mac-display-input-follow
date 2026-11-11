@@ -38,5 +38,12 @@ check(config.monitor(vendor: 13929, model: 19911, serial: 1) == nil, "serial mus
 check((try? Config.decode(config.encoded())) == config, "config round-trips")
 check((try? Config.decode(Data(#"{"monitors":[]}"#.utf8)))?.interval == 1, "interval defaults to 1s")
 
+// Port names
+check(Ports.portName(inServicePath: "IOService:/AppleARMPE/arm-io/AppleT602xIO/dcpext1@15C00000/AppleASCWrapV4/iop-dcpext1-nub/RTBuddy(DCPEXT1)/DCPEXT1Endpoint9/AFKDCPEXT1Endpoint9/AFKEPInterfaceServiceKextV2/dispext1:dcpav-service-epic:0/DCPAVServiceProxy") == "dispext1", "port from DDC service path")
+check(Ports.portName(inServicePath: "IOService:/AppleARMPE/arm-io/AppleT602xIO/dcp0@89C00000/AppleASCWrapV4/iop-dcp0-nub/RTBuddy(DCP0)/DCP0Endpoint9/AFKDCP0Endpoint9/AFKEPInterfaceServiceKextV2/disp0:dcpav-service-epic:0/DCPAVServiceProxy") == nil, "built-in has no external port")
+check(Ports.portName(inFramebufferPath: "IOService:/AppleARMPE/arm-io/AppleT602xIO/dispext1@14000000/IOMobileFramebufferShim") == "dispext1", "port from framebuffer path")
+check(Ports.portName(inFramebufferPath: "IOService:/AppleARMPE/arm-io/AppleT602xIO/disp0@88000000/IOMobileFramebufferShim") == nil, "built-in framebuffer")
+check(Ports.portName(inFramebufferPath: "IOService:/x/dispext10@1/IOMobileFramebufferShim") == "dispext10", "two-digit port")
+
 if failures > 0 { print("\(failures) check(s) failed"); exit(1) }
 print("all checks passed")

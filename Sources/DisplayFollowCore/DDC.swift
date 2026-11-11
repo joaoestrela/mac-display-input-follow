@@ -6,25 +6,8 @@ public enum DDC {
     /// VCP code for the active input source.
     public static let inputSource: UInt8 = 0x60
 
-    static func externalAVService() -> CFTypeRef? {
-        var iter: io_iterator_t = 0
-        guard IOServiceGetMatchingServices(kIOMainPortDefault, IOServiceMatching("DCPAVServiceProxy"), &iter) == KERN_SUCCESS
-        else { return nil }
-        defer { IOObjectRelease(iter) }
-        while case let svc = IOIteratorNext(iter), svc != 0 {
-            defer { IOObjectRelease(svc) }
-            let location = IORegistryEntryCreateCFProperty(svc, "Location" as CFString, kCFAllocatorDefault, 0)?
-                .takeRetainedValue() as? String
-            if location == "External", let av = IOAVServiceCreateWithService(kCFAllocatorDefault, svc) {
-                return av.takeRetainedValue()
-            }
-        }
-        return nil
-    }
-
-    /// Reads a VCP feature's current value from the first external monitor.
-    public static func read(_ code: UInt8, attempts: Int = 5) -> Int? {
-        guard let av = externalAVService() else { return nil }
+    /// Reads a VCP feature's current value through an IOAVService (see `ExternalPort`).
+    static func read(_ code: UInt8, service av: CFTypeRef, attempts: Int = 5) -> Int? {
         for _ in 0..<attempts {
             var request = DDCPacket.getVCPRequest(code)
             _ = IOAVServiceWriteI2C(av, 0x37, 0x51, &request, UInt32(request.count))

@@ -7,10 +7,13 @@ public final class Watcher {
     var config = Config()
     var configDate: Date?
     var timer: Timer?
-    /// Last known ID of the monitor; a disabled display is no longer listed, so it is remembered.
-    var displayID: CGDirectDisplayID?
-    var monitor: MonitorConfig?
-    var isAway = false
+    /// Per-port memory. A disabled display is no longer listed, so its ID (and identity) is remembered.
+    struct PortState {
+        var displayID: CGDirectDisplayID?
+        var identity: MonitorIdentity?
+        var isAway = false
+    }
+    var ports: [String: PortState] = [:]
 
     public init(configURL: URL = Paths.config, dryRun: Bool = false) {
         self.configURL = configURL
@@ -46,27 +49,32 @@ public final class Watcher {
 
     func tick() {
         reloadConfigIfChanged()
-        let online = Displays.online()
-        if let display = online.first(where: { !$0.builtin }),
-           let configured = config.monitor(vendor: display.vendor, model: display.model, serial: display.serial) {
-            displayID = display.id
-            monitor = configured
-            // Listed again means it is on (re-plugged or turned on elsewhere); in a dry run it never went off.
-            if !dryRun { isAway = false }
+        var active = Displays.activeCount()
+        var seen: [String: PortState] = [:]
+        for port in Ports.external() {
+            var state = ports[port.port] ?? PortState()
+            if let identity = port.identity { state.identity = identity }
+            if let id = port.displayID {
+                state.displayID = id
+                // Listed again means it is on (re-plugged or turned on elsewhere); in a dry run it never went off.
+                if !dryRun { state.isAway = false }
+            }
+            defer { seen[port.port] = state }
+            guard let identity = state.identity, let monitor = config.monitor(identity), let id = state.displayID else { continue }
+
+            switch Policy.decide(input: port.readInput(), macInput: monitor.macInput, isAway: state.isAway,
+                                 activeDisplays: active) {
+            case .none:
+                break
+            case .away(let input):
+                log("\(monitor.name) [\(port.port)] on input \(input) -> disabling display \(id)")
+                if dryRun || Displays.setEnabled(id, false) { state.isAway = true; active -= 1 }
+            case .back(let input):
+                log("\(monitor.name) [\(port.port)] back on input \(input) -> enabling display \(id)")
+                if dryRun || Displays.setEnabled(id, true) { state.isAway = false; active += 1 }
+            }
         }
-        guard let id = displayID, let monitor else { return }
-        let input = DDC.read(DDC.inputSource).map(DDCPacket.inputValue)
-        switch Policy.decide(input: input, macInput: monitor.macInput, isAway: isAway,
-                             activeDisplays: online.filter(\.active).count) {
-        case .none:
-            break
-        case .away(let input):
-            log("\(monitor.name) on input \(input) -> disabling display \(id)")
-            if dryRun || Displays.setEnabled(id, false) { isAway = true }
-        case .back(let input):
-            log("\(monitor.name) back on input \(input) -> enabling display \(id)")
-            if dryRun || Displays.setEnabled(id, true) { isAway = false }
-        }
+        ports = seen
     }
 }
 
