@@ -29,10 +29,14 @@ public struct Config: Codable, Equatable {
     public var confirmReads: Int = 2
     /// Seconds to wait after the Mac or its displays wake before acting; DDC is unreliable right after wake.
     public var wakeGrace: Double = 5
+    /// Seconds without a DDC reply after which a monitor that was turned off is turned back on (0 = never).
+    public var ddcLossTimeout: Double = 30
     public var monitors: [MonitorConfig] = []
 
-    public init(interval: Double = 1, confirmReads: Int = 2, wakeGrace: Double = 5, monitors: [MonitorConfig] = []) {
-        self.interval = interval; self.confirmReads = confirmReads; self.wakeGrace = wakeGrace; self.monitors = monitors
+    public init(interval: Double = 1, confirmReads: Int = 2, wakeGrace: Double = 5, ddcLossTimeout: Double = 30,
+                monitors: [MonitorConfig] = []) {
+        self.interval = interval; self.confirmReads = confirmReads; self.wakeGrace = wakeGrace
+        self.ddcLossTimeout = ddcLossTimeout; self.monitors = monitors
     }
 
     public init(from decoder: Decoder) throws {
@@ -40,6 +44,7 @@ public struct Config: Codable, Equatable {
         interval = try c.decodeIfPresent(Double.self, forKey: .interval) ?? 1
         confirmReads = try c.decodeIfPresent(Int.self, forKey: .confirmReads) ?? 2
         wakeGrace = try c.decodeIfPresent(Double.self, forKey: .wakeGrace) ?? 5
+        ddcLossTimeout = try c.decodeIfPresent(Double.self, forKey: .ddcLossTimeout) ?? 30
         monitors = try c.decodeIfPresent([MonitorConfig].self, forKey: .monitors) ?? []
     }
 
@@ -68,7 +73,7 @@ public struct Config: Codable, Equatable {
 }
 
 public enum Paths {
-    static var home: URL { FileManager.default.homeDirectoryForCurrentUser }
+    public static var home: URL { FileManager.default.homeDirectoryForCurrentUser }
 
     /// `$XDG_CONFIG_HOME/display-follow/config.json`, defaulting to `~/.config`.
     public static var config: URL {

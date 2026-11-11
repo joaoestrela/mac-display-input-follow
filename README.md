@@ -32,6 +32,7 @@ Other targets: `make check` (offline logic checks), `make stop`, `make start`, `
 ```json
 {
   "confirmReads" : 2,
+  "ddcLossTimeout" : 30,
   "interval" : 1,
   "monitors" : [
     { "name" : "MSI MAG322UPF", "vendor" : 13929, "model" : 19911, "serial" : 16843009, "macInput" : 17 }
@@ -43,9 +44,20 @@ Other targets: `make check` (offline logic checks), `make stop`, `make start`, `
 - `interval`: seconds between DDC reads.
 - `confirmReads`: how many reads in a row must agree before acting, so one bad reading can't turn a monitor off. With the defaults, a switch takes effect in about 2 seconds.
 - `wakeGrace`: seconds to wait after the Mac or its displays wake before acting. Polling pauses while the Mac or its displays sleep, so DDC traffic can't keep a monitor awake.
+- `ddcLossTimeout`: seconds without a DDC reply after which a monitor that was turned off is turned back on (for example, when it was powered off). `0` disables this.
 - `macInput`: the input value the monitor reports while showing this Mac. Run `setup` again if you move the Mac to another port.
 
 The watcher reloads the file when it changes; no restart needed. `display-follow status` shows the config next to what the monitor reports now.
+
+## Safety
+
+A display turned off in software isn't listed by macOS any more, so `display-follow` records each display it turns off in `~/.local/state/display-follow/state.json` (or `$XDG_STATE_HOME`) and turns it back on when:
+
+- the watcher stops (`make stop`, `make uninstall`, logout, Ctrl-C);
+- the monitor stops answering over DDC for `ddcLossTimeout` seconds;
+- you run `display-follow restore`.
+
+A monitor unplugged while off is forgotten; macOS turns it on again when it is reconnected. After a crash, the restarted watcher picks up the state file and keeps following those displays.
 
 ## Commands
 
@@ -56,6 +68,7 @@ The watcher reloads the file when it changes; no restart needed. `display-follow
 | `display-follow run [--dry-run]` | Watch the monitors. `--dry-run` logs decisions without changing displays |
 | `display-follow list` | List online displays with ID, vendor, model, serial and port |
 | `display-follow input` | Read each external monitor's input source (VCP `0x60`). Works while a display is disabled |
+| `display-follow restore` | Turn back on every display `display-follow` turned off |
 | `display-follow off <id>` | Turn a display off in software |
 | `display-follow on <id>` | Turn it back on |
 
@@ -66,4 +79,4 @@ The watcher reloads the file when it changes; no restart needed. `display-follow
 - Monitors are told apart by their EDID vendor, model and serial number. Identical monitors that report the same serial (many use a placeholder) share one config entry, so they must be connected to the same input number.
 - Each monitor's DDC service is matched to its display through the Apple Silicon port name (`dispextN`) in the IORegistry, which appears in both the DDC service's path and the display's `IODisplayLocation`.
 - If the monitor auto-scans inputs when it sees no signal, it may jump away from the Mac before the Mac turns the display back on. Turn off auto input-select on the monitor.
-- If a display ever stays off, run `display-follow on <id>` with the ID it had in `display-follow list` (usually `2`), or unplug and replug the cable.
+- If a display ever stays off, run `display-follow restore`, or unplug and replug the cable.

@@ -8,6 +8,7 @@ usage: display-follow <command>
   run [--dry-run]   watch the monitors and turn them off/on as their inputs change
   list              list online displays (ID, vendor, model, port)
   input             read each external monitor's current input over DDC
+  restore           turn back on every display display-follow turned off
   on <id>           turn a display on in software
   off <id>          turn a display off in software
   version           print the version
@@ -77,6 +78,9 @@ case "input":
         if let input = port.readInput() { print("\(label): \(input)") } else { print("\(label): no DDC reply"); failed = true }
     }
     if failed { exit(1) }
+case "restore":
+    let restored = StateStore.restoreAll()
+    if restored.isEmpty { print("nothing to restore") }
 case "on", "off":
     guard let id = args.first.flatMap(UInt32.init) else { fail("need a display id (see `display-follow list`)", code: 2) }
     guard Displays.setEnabled(id, command == "on") else { fail("could not turn display \(id) \(command)") }
