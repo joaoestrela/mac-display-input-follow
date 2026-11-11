@@ -27,5 +27,16 @@ check(Policy.decide(input: 17, macInput: 17, isAway: true, activeDisplays: 1) ==
 check(Policy.decide(input: 17, macInput: 17, isAway: false, activeDisplays: 2) == .none, "steady on mac")
 check(Policy.decide(input: nil, macInput: 17, isAway: true, activeDisplays: 1) == .none, "no reading")
 
+// Config
+let msi = MonitorConfig(name: "MSI", vendor: 13929, model: 19911, serial: 16843009, macInput: 17)
+var config = Config()
+config.upsert(msi)
+config.upsert(MonitorConfig(name: "MSI", vendor: 13929, model: 19911, serial: 16843009, macInput: 15))
+check(config.monitors.count == 1 && config.monitors[0].macInput == 15, "upsert replaces the same monitor")
+check(config.monitor(vendor: 13929, model: 19911, serial: 16843009) != nil, "finds monitor")
+check(config.monitor(vendor: 13929, model: 19911, serial: 1) == nil, "serial must match")
+check((try? Config.decode(config.encoded())) == config, "config round-trips")
+check((try? Config.decode(Data(#"{"monitors":[]}"#.utf8)))?.interval == 1, "interval defaults to 1s")
+
 if failures > 0 { print("\(failures) check(s) failed"); exit(1) }
 print("all checks passed")

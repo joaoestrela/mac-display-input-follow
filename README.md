@@ -17,27 +17,38 @@ It runs as a `launchd` login item and checks the monitor once a second.
 
 ## Install
 
+Run this while the monitor is showing the Mac:
+
 ```bash
-make install     # builds display-follow, installs to ~/.local/bin, loads the login item
+make install     # builds display-follow, installs to ~/.local/bin, runs setup if needed, loads the login item
 ```
 
 Other targets: `make check` (offline logic checks), `make stop`, `make start`, `make restart`, `make logs`, `make uninstall`.
 
-## Configure for your monitor
+## Configure
 
-The defaults are for an MSI MAG322UPF with the Mac on HDMI 1. Find your values:
+`display-follow setup` records the external monitor and the input it is showing right now, so run it while the Mac is on screen. It writes `~/.config/display-follow/config.json` (or `$XDG_CONFIG_HOME/display-follow/config.json`):
 
-```bash
-.build/display-follow list    # vendor= / model= of your external display
-.build/display-follow input   # run while the Mac's input is showing -> MAC_INPUT
+```json
+{
+  "interval" : 1,
+  "monitors" : [
+    { "name" : "MSI MAG322UPF", "vendor" : 13929, "model" : 19911, "serial" : 16843009, "macInput" : 17 }
+  ]
+}
 ```
 
-Set `MAC_INPUT`, `VENDOR` and `MODEL` in the plist's `EnvironmentVariables`, or change the defaults in `Sources/DisplayFollowCore/Watcher.swift`, then run `make install` again.
+- `interval`: seconds between DDC reads.
+- `macInput`: the input value the monitor reports while showing this Mac. Run `setup` again if you move the Mac to another port.
+
+The watcher reloads the file when it changes; no restart needed. `display-follow status` shows the config next to what the monitor reports now.
 
 ## Commands
 
 | Command | What it does |
 |---|---|
+| `display-follow setup` | Save the external monitor and the Mac's current input to the config |
+| `display-follow status` | Show the config and the monitor's current input |
 | `display-follow run [--dry-run]` | Watch the monitor. `--dry-run` logs decisions without changing displays |
 | `display-follow list` | List online displays with ID, vendor, model and serial |
 | `display-follow input` | Read the external monitor's input source (VCP `0x60`). Works while the display is disabled |

@@ -32,6 +32,7 @@ install: build
 	sed -e 's#@LABEL@#$(LABEL)#' -e 's#@BINDIR@#$(BINDIR)#' -e 's#@LOG@#$(LOG)#' \
 	    launchd/com.display-follow.plist.in > $(PLIST)
 	plutil -lint $(PLIST)
+	@$(BINDIR)/display-follow status >/dev/null 2>&1 || $(BINDIR)/display-follow setup
 	$(MAKE) restart
 
 start:
