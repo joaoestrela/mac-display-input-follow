@@ -13,6 +13,10 @@ public struct MonitorConfig: Codable, Equatable {
         self.name = name; self.vendor = vendor; self.model = model; self.serial = serial; self.macInput = macInput
     }
 
+    public init(_ identity: MonitorIdentity, macInput: Int) {
+        self.init(name: identity.name, vendor: identity.vendor, model: identity.model, serial: identity.serial, macInput: macInput)
+    }
+
     public func matches(vendor: UInt32, model: UInt32, serial: UInt32) -> Bool {
         self.vendor == vendor && self.model == model && self.serial == serial
     }
@@ -41,6 +45,11 @@ public struct Config: Codable, Equatable {
 
     public func monitor(vendor: UInt32, model: UInt32, serial: UInt32) -> MonitorConfig? {
         monitors.first { $0.matches(vendor: vendor, model: model, serial: serial) }
+    }
+
+    /// Identical monitors that report the same serial share one entry.
+    public func monitor(_ identity: MonitorIdentity) -> MonitorConfig? {
+        monitor(vendor: identity.vendor, model: identity.model, serial: identity.serial)
     }
 
     public static func decode(_ data: Data) throws -> Config { try JSONDecoder().decode(Config.self, from: data) }
