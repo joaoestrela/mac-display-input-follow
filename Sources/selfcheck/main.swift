@@ -27,6 +27,23 @@ check(Policy.decide(input: 17, macInput: 17, isAway: true, activeDisplays: 1) ==
 check(Policy.decide(input: 17, macInput: 17, isAway: false, activeDisplays: 2) == .none, "steady on mac")
 check(Policy.decide(input: nil, macInput: 17, isAway: true, activeDisplays: 1) == .none, "no reading")
 
+// Confirmer
+var confirmer = Confirmer()
+check(confirmer.confirm(.away(input: 15), required: 2) == .none, "first read waits")
+check(confirmer.confirm(.away(input: 15), required: 2) == .away(input: 15), "second identical read acts")
+check(confirmer.confirm(.away(input: 15), required: 2) == .none, "resets after acting")
+confirmer = Confirmer()
+_ = confirmer.confirm(.away(input: 15), required: 2)
+check(confirmer.confirm(.none, required: 2) == .none, "steady read clears pending")
+check(confirmer.confirm(.away(input: 15), required: 2) == .none, "count restarted")
+confirmer = Confirmer()
+_ = confirmer.confirm(.away(input: 15), required: 3)
+check(confirmer.confirm(.away(input: 16), required: 3) == .none, "different input restarts count")
+var c1 = Confirmer()
+check(c1.confirm(.back(input: 17), required: 1) == .back(input: 17), "required 1 acts at once")
+var c0 = Confirmer()
+check(c0.confirm(.back(input: 17), required: 0) == .back(input: 17), "required 0 treated as 1")
+
 // Config
 let msi = MonitorConfig(name: "MSI", vendor: 13929, model: 19911, serial: 16843009, macInput: 17)
 var config = Config()
@@ -36,7 +53,8 @@ check(config.monitors.count == 1 && config.monitors[0].macInput == 15, "upsert r
 check(config.monitor(vendor: 13929, model: 19911, serial: 16843009) != nil, "finds monitor")
 check(config.monitor(vendor: 13929, model: 19911, serial: 1) == nil, "serial must match")
 check((try? Config.decode(config.encoded())) == config, "config round-trips")
-check((try? Config.decode(Data(#"{"monitors":[]}"#.utf8)))?.interval == 1, "interval defaults to 1s")
+let defaults = try? Config.decode(Data(#"{"monitors":[]}"#.utf8))
+check(defaults?.interval == 1 && defaults?.confirmReads == 2 && defaults?.wakeGrace == 5, "defaults for missing keys")
 
 // Port names
 check(Ports.portName(inServicePath: "IOService:/AppleARMPE/arm-io/AppleT602xIO/dcpext1@15C00000/AppleASCWrapV4/iop-dcpext1-nub/RTBuddy(DCPEXT1)/DCPEXT1Endpoint9/AFKDCPEXT1Endpoint9/AFKEPInterfaceServiceKextV2/dispext1:dcpav-service-epic:0/DCPAVServiceProxy") == "dispext1", "port from DDC service path")

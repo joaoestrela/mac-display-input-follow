@@ -20,3 +20,20 @@ public enum Policy {
         return isAway ? .back(input: input) : .none
     }
 }
+
+/// Acts on a decision only after it has come out the same for `required` reads in a row,
+/// so one bad or transitional DDC reading cannot turn a monitor off.
+public struct Confirmer: Equatable {
+    var pending: Decision = .none
+    var count = 0
+
+    public init() {}
+
+    public mutating func confirm(_ decision: Decision, required: Int) -> Decision {
+        guard decision != .none else { self = Confirmer(); return .none }
+        if decision == pending { count += 1 } else { pending = decision; count = 1 }
+        guard count >= max(required, 1) else { return .none }
+        self = Confirmer()
+        return decision
+    }
+}
