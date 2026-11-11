@@ -1,5 +1,15 @@
 import Foundation
 
+/// What to do with a monitor while it shows another input.
+public enum AwayAction: String, Codable, CaseIterable {
+    /// Turn the display off in software; windows move to the remaining displays.
+    case disable
+    /// Mirror it onto another display (the built-in one if active); windows gather there.
+    case mirror
+    /// Leave the display alone; only run the hooks.
+    case none
+}
+
 /// One monitor to follow. Identified by its EDID vendor, model and serial.
 public struct MonitorConfig: Codable, Equatable {
     public var name: String
@@ -8,9 +18,27 @@ public struct MonitorConfig: Codable, Equatable {
     public var serial: UInt32
     /// Input source value (VCP 0x60, low byte) the monitor reports while showing this Mac.
     public var macInput: Int
+    public var action: AwayAction = .disable
+    /// Shell commands run when the monitor switches away from / back to the Mac.
+    public var onAway: String?
+    public var onBack: String?
 
-    public init(name: String, vendor: UInt32, model: UInt32, serial: UInt32, macInput: Int) {
+    public init(name: String, vendor: UInt32, model: UInt32, serial: UInt32, macInput: Int,
+                action: AwayAction = .disable, onAway: String? = nil, onBack: String? = nil) {
         self.name = name; self.vendor = vendor; self.model = model; self.serial = serial; self.macInput = macInput
+        self.action = action; self.onAway = onAway; self.onBack = onBack
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        name = try c.decode(String.self, forKey: .name)
+        vendor = try c.decode(UInt32.self, forKey: .vendor)
+        model = try c.decode(UInt32.self, forKey: .model)
+        serial = try c.decode(UInt32.self, forKey: .serial)
+        macInput = try c.decode(Int.self, forKey: .macInput)
+        action = try c.decodeIfPresent(AwayAction.self, forKey: .action) ?? .disable
+        onAway = try c.decodeIfPresent(String.self, forKey: .onAway)
+        onBack = try c.decodeIfPresent(String.self, forKey: .onBack)
     }
 
     public init(_ identity: MonitorIdentity, macInput: Int) {
@@ -48,8 +76,12 @@ public struct Config: Codable, Equatable {
         monitors = try c.decodeIfPresent([MonitorConfig].self, forKey: .monitors) ?? []
     }
 
-    /// Adds a monitor, replacing any entry for the same physical monitor.
+    /// Adds a monitor, replacing any entry for the same physical monitor but keeping its action and hooks.
     public mutating func upsert(_ monitor: MonitorConfig) {
+        var monitor = monitor
+        if let old = self.monitor(vendor: monitor.vendor, model: monitor.model, serial: monitor.serial) {
+            monitor.action = old.action; monitor.onAway = old.onAway; monitor.onBack = old.onBack
+        }
         monitors.removeAll { $0.matches(vendor: monitor.vendor, model: monitor.model, serial: monitor.serial) }
         monitors.append(monitor)
     }

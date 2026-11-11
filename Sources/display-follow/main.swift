@@ -8,7 +8,7 @@ usage: display-follow <command>
   run [--dry-run]   watch the monitors and turn them off/on as their inputs change
   list              list online displays (ID, vendor, model, port)
   input             read each external monitor's current input over DDC
-  restore           turn back on every display display-follow turned off
+  restore           undo every display display-follow turned off or mirrored
   on <id>           turn a display on in software
   off <id>          turn a display off in software
   version           print the version
@@ -48,7 +48,8 @@ case "status":
     if ports.isEmpty { print("no external monitors connected") }
     for port in ports {
         let name = port.identity?.name ?? "unknown monitor"
-        let state = port.displayID.map { "display \($0)" } ?? "display off or unavailable"
+        let state = port.displayID.map { "display \($0)\(Displays.isMirroring($0) ? " (mirroring)" : "")" }
+            ?? "display off or unavailable"
         let configured = port.identity.flatMap(config.monitor)
         let input = port.readInput()
         let showing: String
@@ -57,7 +58,7 @@ case "status":
         case (let input?, let monitor?): showing = input == monitor.macInput ? "showing the Mac (input \(input))" : "on input \(input)"
         case (let input?, nil): showing = "on input \(input)"
         }
-        let mac = configured.map { "mac input \($0.macInput)" } ?? "not configured (run setup)"
+        let mac = configured.map { "mac input \($0.macInput), action \($0.action.rawValue)" } ?? "not configured (run setup)"
         print("\(name) [\(port.port)]: \(mac); \(state); \(showing)")
     }
 case "run":
@@ -79,8 +80,7 @@ case "input":
     }
     if failed { exit(1) }
 case "restore":
-    let restored = StateStore.restoreAll()
-    if restored.isEmpty { print("nothing to restore") }
+    if StateStore.restoreAll().isEmpty { print("nothing to restore") }
 case "on", "off":
     guard let id = args.first.flatMap(UInt32.init) else { fail("need a display id (see `display-follow list`)", code: 2) }
     guard Displays.setEnabled(id, command == "on") else { fail("could not turn display \(id) \(command)") }

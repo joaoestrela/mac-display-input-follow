@@ -8,13 +8,17 @@ public final class Watcher {
     var config = Config()
     var configDate: Date?
     var timer: Timer?
+    /// How a monitor was handled when it switched away.
+    enum AwayMode { case off, mirrored, hooksOnly }
+
     /// Per-port memory. A disabled display is no longer listed, so its ID (and identity) is remembered.
     struct PortState {
         var displayID: CGDirectDisplayID?
         var identity: MonitorIdentity?
-        var isAway = false
+        var away: AwayMode?
         var confirmer = Confirmer()
         var lastReply = Date()
+        var isAway: Bool { away != nil }
     }
     var ports: [String: PortState] = [:]
     /// Set while the Mac or its displays sleep. DDC polling then could keep a monitor awake.
@@ -59,16 +63,21 @@ public final class Watcher {
 
     /// Picks up displays a previous run turned off, so they are still followed (and turned back on).
     func adoptState() {
-        for (port, id) in StateStore.load().off {
-            ports[port] = PortState(displayID: id, isAway: true)
+        let state = StateStore.load()
+        for (port, id) in state.off {
+            ports[port] = PortState(displayID: id, away: .off)
             log("display \(id) [\(port)] was turned off by a previous run")
+        }
+        for (port, id) in state.mirrored {
+            ports[port] = PortState(displayID: id, away: .mirrored)
+            log("display \(id) [\(port)] was mirrored by a previous run")
         }
     }
 
     func saveState() {
         guard !dryRun else { return }
-        let off = ports.compactMapValues { $0.isAway ? $0.displayID : nil }
-        StateStore.save(RuntimeState(off: off))
+        StateStore.save(RuntimeState(off: ports.compactMapValues { $0.away == .off ? $0.displayID : nil },
+                                     mirrored: ports.compactMapValues { $0.away == .mirrored ? $0.displayID : nil }))
     }
 
     /// On stop (launchctl bootout, Ctrl-C, logout) turn back on every display this tool turned off.
@@ -119,7 +128,7 @@ public final class Watcher {
         let connected = Ports.external()
 
         // A monitor unplugged while off: try to turn it on and forget it (macOS re-enables it on reconnect).
-        for (port, state) in ports where state.isAway && !connected.contains(where: { $0.port == port }) {
+        for (port, state) in ports where state.away == .off && !connected.contains(where: { $0.port == port }) {
             if let id = state.displayID, !dryRun { Displays.setEnabled(id, true) }
             log("\(state.identity?.name ?? "display") [\(port)] disconnected while off; forgetting it")
         }
@@ -127,36 +136,85 @@ public final class Watcher {
         for port in connected {
             var state = ports[port.port] ?? PortState()
             if let identity = port.identity { state.identity = identity }
-            if let id = port.displayID {
-                state.displayID = id
-                // Listed again means it is on (re-plugged or turned on elsewhere); in a dry run it never went off.
-                if !dryRun { state.isAway = false }
+            if let id = port.displayID { state.displayID = id }
+            // Undone outside this tool (re-plugged, turned on, unmirrored): forget it. A dry run never changes anything.
+            if !dryRun, let id = port.displayID,
+               state.away == .off || (state.away == .mirrored && !Displays.isMirroring(id)) {
+                state.away = nil
             }
             defer { seen[port.port] = state }
-            guard let identity = state.identity, let monitor = config.monitor(identity), let id = state.displayID else { continue }
+            guard let identity = state.identity else { continue }
+            guard let monitor = config.monitor(identity) else {
+                // Removed from the config while away: put the display back.
+                if state.isAway, undo(&state, id: state.displayID) { active += 1 }
+                continue
+            }
+            // Disabling or mirroring needs the display ID; hooks-only monitors don't.
+            let id = state.displayID
+            guard id != nil || monitor.action == .none || state.isAway else { continue }
 
             let input = port.readInput()
             let now = Date()
             if input != nil { state.lastReply = now }
             if state.isAway, Policy.ddcLost(lastReply: state.lastReply, now: now, timeout: config.ddcLossTimeout) {
-                log("\(monitor.name) [\(port.port)] silent over DDC for \(Int(config.ddcLossTimeout))s -> enabling display \(id)")
-                if dryRun || Displays.setEnabled(id, true) { state.isAway = false; active += 1 }
+                log("\(monitor.name) [\(port.port)] silent over DDC for \(Int(config.ddcLossTimeout))s -> restoring it")
+                if undo(&state, id: id) { active += 1 }
                 continue
             }
             let decision = Policy.decide(input: input, macInput: monitor.macInput, isAway: state.isAway,
-                                         activeDisplays: active)
+                                         activeDisplays: active, needsOtherDisplay: monitor.action != .none)
             switch state.confirmer.confirm(decision, required: config.confirmReads) {
             case .none:
                 break
             case .away(let input):
-                log("\(monitor.name) [\(port.port)] on input \(input) -> disabling display \(id)")
-                if dryRun || Displays.setEnabled(id, false) { state.isAway = true; active -= 1 }
+                let label = "\(monitor.name) [\(port.port)] on input \(input)"
+                switch monitor.action {
+                case .disable:
+                    guard let id else { continue }
+                    log("\(label) -> disabling display \(id)")
+                    guard dryRun || Displays.setEnabled(id, false) else { log("could not disable display \(id)"); continue }
+                    state.away = .off
+                    active -= 1
+                case .mirror:
+                    guard let id, let target = Displays.mirrorTarget(for: id) else { continue }
+                    log("\(label) -> mirroring display \(id) onto \(target)")
+                    guard dryRun || Displays.setMirror(id, of: target) else { log("could not mirror display \(id)"); continue }
+                    state.away = .mirrored
+                case .none:
+                    log("\(label)")
+                    state.away = .hooksOnly
+                }
+                Hooks.run(monitor.onAway, event: "away", monitor: monitor.name, port: port.port, input: input, dryRun: dryRun)
             case .back(let input):
-                log("\(monitor.name) [\(port.port)] back on input \(input) -> enabling display \(id)")
-                if dryRun || Displays.setEnabled(id, true) { state.isAway = false; active += 1 }
+                log("\(monitor.name) [\(port.port)] back on input \(input)")
+                if undo(&state, id: id) { active += 1 }
+                Hooks.run(monitor.onBack, event: "back", monitor: monitor.name, port: port.port, input: input, dryRun: dryRun)
             }
         }
         ports = seen
+    }
+
+    /// Reverses whatever was done when the monitor went away. Returns true if a display was turned back on.
+    func undo(_ state: inout PortState, id: CGDirectDisplayID?) -> Bool {
+        guard let id, state.away == .off || state.away == .mirrored else {
+            state.away = nil
+            return false
+        }
+        switch state.away {
+        case .off:
+            log("enabling display \(id)")
+            guard dryRun || Displays.setEnabled(id, true) else { log("could not enable display \(id)"); return false }
+            state.away = nil
+            return true
+        case .mirrored:
+            log("stopping mirroring of display \(id)")
+            guard dryRun || Displays.setMirror(id, of: nil) else { log("could not stop mirroring display \(id)"); return false }
+            state.away = nil
+            return false
+        case .hooksOnly, nil:
+            state.away = nil
+            return false
+        }
     }
 }
 

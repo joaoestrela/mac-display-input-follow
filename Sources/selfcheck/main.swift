@@ -26,6 +26,8 @@ check(Policy.decide(input: 15, macInput: 17, isAway: true, activeDisplays: 1) ==
 check(Policy.decide(input: 17, macInput: 17, isAway: true, activeDisplays: 1) == .back(input: 17), "switch back")
 check(Policy.decide(input: 17, macInput: 17, isAway: false, activeDisplays: 2) == .none, "steady on mac")
 check(Policy.decide(input: nil, macInput: 17, isAway: true, activeDisplays: 1) == .none, "no reading")
+check(Policy.decide(input: 15, macInput: 17, isAway: false, activeDisplays: 1, needsOtherDisplay: false) == .away(input: 15),
+      "hooks-only works with one display")
 
 // DDC loss
 let t0 = Date(timeIntervalSince1970: 1000)
@@ -34,7 +36,10 @@ check(Policy.ddcLost(lastReply: t0, now: t0.addingTimeInterval(31), timeout: 30)
 check(!Policy.ddcLost(lastReply: t0, now: t0.addingTimeInterval(9999), timeout: 0), "timeout 0 disables")
 
 // State
-check((try? JSONDecoder().decode(RuntimeState.self, from: JSONEncoder().encode(RuntimeState(off: ["dispext1": 2])))) == RuntimeState(off: ["dispext1": 2]), "state round-trips")
+let both = RuntimeState(off: ["dispext1": 2], mirrored: ["dispext2": 3])
+check((try? JSONDecoder().decode(RuntimeState.self, from: JSONEncoder().encode(both))) == both, "state round-trips")
+check((try? JSONDecoder().decode(RuntimeState.self, from: Data(#"{"off":{"dispext1":2}}"#.utf8)))?.mirrored == [:],
+      "older state file without mirrored")
 
 // Confirmer
 var confirmer = Confirmer()
@@ -65,6 +70,20 @@ check((try? Config.decode(config.encoded())) == config, "config round-trips")
 let defaults = try? Config.decode(Data(#"{"monitors":[]}"#.utf8))
 check(defaults?.interval == 1 && defaults?.confirmReads == 2 && defaults?.wakeGrace == 5 && defaults?.ddcLossTimeout == 30,
       "defaults for missing keys")
+
+// Actions and hooks
+let withHooks = try? Config.decode(Data(#"{"monitors":[{"name":"M","vendor":1,"model":2,"serial":3,"macInput":17,"action":"mirror","onAway":"echo away"}]}"#.utf8))
+check(withHooks?.monitors.first?.action == .mirror && withHooks?.monitors.first?.onAway == "echo away", "decodes action and hook")
+let plain = try? Config.decode(Data(#"{"monitors":[{"name":"M","vendor":1,"model":2,"serial":3,"macInput":17}]}"#.utf8))
+check(plain?.monitors.first?.action == .disable && plain?.monitors.first?.onBack == nil, "action defaults to disable")
+check((try? Config.decode(Data(#"{"monitors":[{"name":"M","vendor":1,"model":2,"serial":3,"macInput":17,"action":"explode"}]}"#.utf8))) == nil,
+      "rejects unknown action")
+var keep = Config()
+keep.upsert(MonitorConfig(name: "M", vendor: 1, model: 2, serial: 3, macInput: 17, action: .none, onAway: "a", onBack: "b"))
+keep.upsert(MonitorConfig(name: "M", vendor: 1, model: 2, serial: 3, macInput: 15))
+check(keep.monitors == [MonitorConfig(name: "M", vendor: 1, model: 2, serial: 3, macInput: 15, action: .none, onAway: "a", onBack: "b")],
+      "setup keeps action and hooks")
+check(Hooks.environment(event: "away", monitor: "M", port: "dispext1", input: 15)["DISPLAY_FOLLOW_INPUT"] == "15", "hook env")
 
 // Port names
 check(Ports.portName(inServicePath: "IOService:/AppleARMPE/arm-io/AppleT602xIO/dcpext1@15C00000/AppleASCWrapV4/iop-dcpext1-nub/RTBuddy(DCPEXT1)/DCPEXT1Endpoint9/AFKDCPEXT1Endpoint9/AFKEPInterfaceServiceKextV2/dispext1:dcpav-service-epic:0/DCPAVServiceProxy") == "dispext1", "port from DDC service path")
