@@ -1,3 +1,5 @@
+import Foundation
+
 /// What the watcher should do after one reading. Pure, so it can be checked offline.
 public enum Decision: Equatable {
     case none
@@ -18,6 +20,14 @@ public enum Policy {
             return !isAway && activeDisplays > 1 ? .away(input: input) : .none
         }
         return isAway ? .back(input: input) : .none
+    }
+}
+
+extension Policy {
+    /// A monitor the watcher turned off is turned back on if DDC has been silent this long:
+    /// it may have been powered off, or the Mac can no longer tell what it shows.
+    public static func ddcLost(lastReply: Date, now: Date, timeout: TimeInterval) -> Bool {
+        timeout > 0 && now.timeIntervalSince(lastReply) > timeout
     }
 }
 

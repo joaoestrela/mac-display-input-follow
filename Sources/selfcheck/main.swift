@@ -27,6 +27,15 @@ check(Policy.decide(input: 17, macInput: 17, isAway: true, activeDisplays: 1) ==
 check(Policy.decide(input: 17, macInput: 17, isAway: false, activeDisplays: 2) == .none, "steady on mac")
 check(Policy.decide(input: nil, macInput: 17, isAway: true, activeDisplays: 1) == .none, "no reading")
 
+// DDC loss
+let t0 = Date(timeIntervalSince1970: 1000)
+check(!Policy.ddcLost(lastReply: t0, now: t0.addingTimeInterval(30), timeout: 30), "not lost at the limit")
+check(Policy.ddcLost(lastReply: t0, now: t0.addingTimeInterval(31), timeout: 30), "lost after timeout")
+check(!Policy.ddcLost(lastReply: t0, now: t0.addingTimeInterval(9999), timeout: 0), "timeout 0 disables")
+
+// State
+check((try? JSONDecoder().decode(RuntimeState.self, from: JSONEncoder().encode(RuntimeState(off: ["dispext1": 2])))) == RuntimeState(off: ["dispext1": 2]), "state round-trips")
+
 // Confirmer
 var confirmer = Confirmer()
 check(confirmer.confirm(.away(input: 15), required: 2) == .none, "first read waits")
@@ -54,7 +63,8 @@ check(config.monitor(vendor: 13929, model: 19911, serial: 16843009) != nil, "fin
 check(config.monitor(vendor: 13929, model: 19911, serial: 1) == nil, "serial must match")
 check((try? Config.decode(config.encoded())) == config, "config round-trips")
 let defaults = try? Config.decode(Data(#"{"monitors":[]}"#.utf8))
-check(defaults?.interval == 1 && defaults?.confirmReads == 2 && defaults?.wakeGrace == 5, "defaults for missing keys")
+check(defaults?.interval == 1 && defaults?.confirmReads == 2 && defaults?.wakeGrace == 5 && defaults?.ddcLossTimeout == 30,
+      "defaults for missing keys")
 
 // Port names
 check(Ports.portName(inServicePath: "IOService:/AppleARMPE/arm-io/AppleT602xIO/dcpext1@15C00000/AppleASCWrapV4/iop-dcpext1-nub/RTBuddy(DCPEXT1)/DCPEXT1Endpoint9/AFKDCPEXT1Endpoint9/AFKEPInterfaceServiceKextV2/dispext1:dcpav-service-epic:0/DCPAVServiceProxy") == "dispext1", "port from DDC service path")
