@@ -40,6 +40,12 @@ brew services start display-follow     # logs to $(brew --prefix)/var/log/displa
 
 `brew upgrade --fetch-HEAD display-follow` picks up new commits. Use either Homebrew or `make install`, not both: two watchers would fight.
 
+### From a release
+
+Each `v*` tag builds an arm64 binary and attaches `display-follow-<tag>-macos-arm64.tar.gz` (with a `.sha256`) to a GitHub release. The binary is ad-hoc signed, not notarized: after downloading, clear the quarantine flag with `xattr -d com.apple.quarantine display-follow`.
+
+To cut a release, set the version in `Sources/DisplayFollowCore/Version.swift`, commit, then push a matching tag (`v0.2.0` for `0.2.0`); the workflow fails if they differ.
+
 ## Configure
 
 `display-follow setup` records each external monitor and the input it is showing right now, so run it while the Mac is on screen. Monitors that don't answer over DDC are skipped. It writes `~/.config/display-follow/config.json` (or `$XDG_CONFIG_HOME/display-follow/config.json`):
@@ -106,3 +112,12 @@ A monitor unplugged while off is forgotten; macOS turns it on again when it is r
 - Each monitor's DDC service is matched to its display through the Apple Silicon port name (`dispextN`) in the IORegistry, which appears in both the DDC service's path and the display's `IODisplayLocation`.
 - If the monitor auto-scans inputs when it sees no signal, it may jump away from the Mac before the Mac turns the display back on. Turn off auto input-select on the monitor.
 - If a display ever stays off, run `display-follow restore`, or unplug and replug the cable.
+
+## Development
+
+```bash
+make build check                  # build and run the offline logic checks (Sources/selfcheck)
+.build/display-follow run --dry-run
+```
+
+The build calls `swiftc` directly instead of using SwiftPM, so it only needs the compiler from the Command Line Tools: `swift test` needs a full Xcode install, and SwiftPM's manifest library can be out of step with the compiler in some Command Line Tools installs. CI (`.github/workflows/ci.yml`) runs `make build check` on an Apple Silicon runner for pushes to `main` and pull requests that touch the code.
