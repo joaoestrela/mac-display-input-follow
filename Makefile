@@ -7,7 +7,8 @@ BUILD   := .build
 BIN     := $(BUILD)/display-follow
 CORE    := $(wildcard Sources/DisplayFollowCore/*.swift)
 SWIFTC  ?= swiftc
-SWIFTFLAGS ?= -O -swift-version 5 -target arm64-apple-macos13
+# Module cache inside the build dir, so sandboxed builds (Homebrew) don't write to ~/Library/Caches.
+SWIFTFLAGS ?= -O -swift-version 5 -target arm64-apple-macos13 -module-cache-path $(BUILD)/module-cache
 
 .PHONY: build check install uninstall start stop restart logs clean
 
