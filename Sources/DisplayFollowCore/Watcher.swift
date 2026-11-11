@@ -1,56 +1,71 @@
 import CoreGraphics
 import Foundation
 
-public struct WatcherSettings {
-    public var macInput: Int
-    public var vendor: UInt32
-    public var model: UInt32
-    public var interval: TimeInterval = 1
-    public var dryRun = false
-
-    /// Defaults are for an MSI MAG322UPF on HDMI 1; override with MAC_INPUT, VENDOR and MODEL.
-    public static func fromEnvironment() -> WatcherSettings {
-        let env = ProcessInfo.processInfo.environment
-        return WatcherSettings(macInput: env["MAC_INPUT"].flatMap(Int.init) ?? 17,
-                               vendor: env["VENDOR"].flatMap(UInt32.init) ?? 13929,
-                               model: env["MODEL"].flatMap(UInt32.init) ?? 19911)
-    }
-}
-
 public final class Watcher {
-    let settings: WatcherSettings
+    let configURL: URL
+    let dryRun: Bool
+    var config = Config()
+    var configDate: Date?
+    var timer: Timer?
     /// Last known ID of the monitor; a disabled display is no longer listed, so it is remembered.
     var displayID: CGDirectDisplayID?
+    var monitor: MonitorConfig?
     var isAway = false
 
-    public init(settings: WatcherSettings) { self.settings = settings }
+    public init(configURL: URL = Paths.config, dryRun: Bool = false) {
+        self.configURL = configURL
+        self.dryRun = dryRun
+    }
 
     public func run() -> Never {
-        log("started (mac input \(settings.macInput)\(settings.dryRun ? ", dry run" : ""))")
-        Timer.scheduledTimer(withTimeInterval: settings.interval, repeats: true) { [weak self] _ in self?.tick() }
+        log("started (config \(configURL.path)\(dryRun ? ", dry run" : ""))")
+        reloadConfigIfChanged()
         RunLoop.main.run()
         exit(0)
     }
 
-    func tick() {
-        let online = Displays.online()
-        if let monitor = online.first(where: { !$0.builtin && $0.vendor == settings.vendor && $0.model == settings.model }) {
-            displayID = monitor.id
-            // Listed again means it is on (re-plugged or turned on elsewhere); in a dry run it never went off.
-            if !settings.dryRun { isAway = false }
+    /// Picks up edits to the config file (including `display-follow setup`) without a restart.
+    func reloadConfigIfChanged() {
+        let date = ConfigStore.modificationDate(configURL)
+        guard timer == nil || date != configDate else { return }
+        configDate = date
+        do {
+            if let loaded = try ConfigStore.load(configURL) {
+                config = loaded
+                log("loaded config: \(config.monitors.map { "\($0.name) (mac input \($0.macInput))" }.joined(separator: ", "))")
+            } else {
+                config = Config()
+                log("no config at \(configURL.path); run `display-follow setup` while the Mac's input is showing")
+            }
+        } catch {
+            log("ignoring invalid config: \(error)")
         }
-        guard let id = displayID else { return }
+        timer?.invalidate()
+        timer = Timer.scheduledTimer(withTimeInterval: max(config.interval, 0.2), repeats: true) { [weak self] _ in self?.tick() }
+    }
+
+    func tick() {
+        reloadConfigIfChanged()
+        let online = Displays.online()
+        if let display = online.first(where: { !$0.builtin }),
+           let configured = config.monitor(vendor: display.vendor, model: display.model, serial: display.serial) {
+            displayID = display.id
+            monitor = configured
+            // Listed again means it is on (re-plugged or turned on elsewhere); in a dry run it never went off.
+            if !dryRun { isAway = false }
+        }
+        guard let id = displayID, let monitor else { return }
         let input = DDC.read(DDC.inputSource).map(DDCPacket.inputValue)
-        switch Policy.decide(input: input, macInput: settings.macInput, isAway: isAway,
+        switch Policy.decide(input: input, macInput: monitor.macInput, isAway: isAway,
                              activeDisplays: online.filter(\.active).count) {
         case .none:
             break
         case .away(let input):
-            log("monitor on input \(input) -> disabling display \(id)")
-            if settings.dryRun || Displays.setEnabled(id, false) { isAway = true }
+            log("\(monitor.name) on input \(input) -> disabling display \(id)")
+            if dryRun || Displays.setEnabled(id, false) { isAway = true }
         case .back(let input):
-            log("monitor back on input \(input) -> enabling display \(id)")
-            if settings.dryRun || Displays.setEnabled(id, true) { isAway = false }
+            log("\(monitor.name) back on input \(input) -> enabling display \(id)")
+            if dryRun || Displays.setEnabled(id, true) { isAway = false }
         }
     }
 }
