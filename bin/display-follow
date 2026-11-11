@@ -7,6 +7,7 @@ B="${EXTDISPLAY:-$HOME/.local/bin/extdisplay}"
 STATE="$HOME/.local/share/display-follow/display-id"
 
 log() { echo "$(date '+%F %T') $*"; }
+active_count() { "$B" list | grep -c 'active=true'; }
 find_id() { "$B" list | awk -v v="$VENDOR" -v m="$MODEL" '$0 ~ "vendor="v" model="m"$" {print $1; exit}'; }
 
 mkdir -p "$(dirname "$STATE")"
@@ -17,6 +18,8 @@ while true; do
   input=$("$B" input 2>/dev/null)
   if [ -n "$input" ]; then
     if [ "$input" != "$MAC_INPUT" ] && [ -n "$id" ]; then
+      # Never turn off the last active display (e.g. laptop lid closed).
+      if [ "$(active_count)" -le 1 ]; then sleep 1; continue; fi
       log "monitor on input $input -> disabling display $id" && "$B" off "$id"
     elif [ "$input" = "$MAC_INPUT" ] && [ -z "$id" ] && [ -s "$STATE" ]; then
       log "monitor back on input $input -> enabling display $(cat "$STATE")" && "$B" on "$(cat "$STATE")"
