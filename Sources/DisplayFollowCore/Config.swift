@@ -25,15 +25,21 @@ public struct MonitorConfig: Codable, Equatable {
 public struct Config: Codable, Equatable {
     /// Seconds between DDC reads.
     public var interval: Double = 1
+    /// Identical reads in a row needed before acting.
+    public var confirmReads: Int = 2
+    /// Seconds to wait after the Mac or its displays wake before acting; DDC is unreliable right after wake.
+    public var wakeGrace: Double = 5
     public var monitors: [MonitorConfig] = []
 
-    public init(interval: Double = 1, monitors: [MonitorConfig] = []) {
-        self.interval = interval; self.monitors = monitors
+    public init(interval: Double = 1, confirmReads: Int = 2, wakeGrace: Double = 5, monitors: [MonitorConfig] = []) {
+        self.interval = interval; self.confirmReads = confirmReads; self.wakeGrace = wakeGrace; self.monitors = monitors
     }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         interval = try c.decodeIfPresent(Double.self, forKey: .interval) ?? 1
+        confirmReads = try c.decodeIfPresent(Int.self, forKey: .confirmReads) ?? 2
+        wakeGrace = try c.decodeIfPresent(Double.self, forKey: .wakeGrace) ?? 5
         monitors = try c.decodeIfPresent([MonitorConfig].self, forKey: .monitors) ?? []
     }
 

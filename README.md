@@ -31,14 +31,18 @@ Other targets: `make check` (offline logic checks), `make stop`, `make start`, `
 
 ```json
 {
+  "confirmReads" : 2,
   "interval" : 1,
   "monitors" : [
     { "name" : "MSI MAG322UPF", "vendor" : 13929, "model" : 19911, "serial" : 16843009, "macInput" : 17 }
-  ]
+  ],
+  "wakeGrace" : 5
 }
 ```
 
 - `interval`: seconds between DDC reads.
+- `confirmReads`: how many reads in a row must agree before acting, so one bad reading can't turn a monitor off. With the defaults, a switch takes effect in about 2 seconds.
+- `wakeGrace`: seconds to wait after the Mac or its displays wake before acting. Polling pauses while the Mac or its displays sleep, so DDC traffic can't keep a monitor awake.
 - `macInput`: the input value the monitor reports while showing this Mac. Run `setup` again if you move the Mac to another port.
 
 The watcher reloads the file when it changes; no restart needed. `display-follow status` shows the config next to what the monitor reports now.

@@ -1,3 +1,4 @@
+import AppKit
 import CoreGraphics
 import Foundation
 
@@ -12,8 +13,12 @@ public final class Watcher {
         var displayID: CGDirectDisplayID?
         var identity: MonitorIdentity?
         var isAway = false
+        var confirmer = Confirmer()
     }
     var ports: [String: PortState] = [:]
+    /// Set while the Mac or its displays sleep. DDC polling then could keep a monitor awake.
+    var sleeping = false
+    var resumeAt = Date.distantPast
 
     public init(configURL: URL = Paths.config, dryRun: Bool = false) {
         self.configURL = configURL
@@ -23,6 +28,7 @@ public final class Watcher {
     public func run() -> Never {
         log("started (config \(configURL.path)\(dryRun ? ", dry run" : ""))")
         reloadConfigIfChanged()
+        observeSleep()
         RunLoop.main.run()
         exit(0)
     }
@@ -47,8 +53,29 @@ public final class Watcher {
         timer = Timer.scheduledTimer(withTimeInterval: max(config.interval, 0.2), repeats: true) { [weak self] _ in self?.tick() }
     }
 
+    func observeSleep() {
+        let center = NSWorkspace.shared.notificationCenter
+        for name in [NSWorkspace.willSleepNotification, NSWorkspace.screensDidSleepNotification] {
+            center.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
+                guard let self, !self.sleeping else { return }
+                self.sleeping = true
+                log("paused (\(note.name.rawValue))")
+            }
+        }
+        for name in [NSWorkspace.didWakeNotification, NSWorkspace.screensDidWakeNotification] {
+            center.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
+                guard let self else { return }
+                self.resumeAt = Date().addingTimeInterval(self.config.wakeGrace)
+                for key in self.ports.keys { self.ports[key]?.confirmer = Confirmer() }
+                if self.sleeping { log("resuming in \(Int(self.config.wakeGrace))s (\(note.name.rawValue))") }
+                self.sleeping = false
+            }
+        }
+    }
+
     func tick() {
         reloadConfigIfChanged()
+        guard !sleeping, Date() >= resumeAt else { return }
         var active = Displays.activeCount()
         var seen: [String: PortState] = [:]
         for port in Ports.external() {
@@ -62,8 +89,9 @@ public final class Watcher {
             defer { seen[port.port] = state }
             guard let identity = state.identity, let monitor = config.monitor(identity), let id = state.displayID else { continue }
 
-            switch Policy.decide(input: port.readInput(), macInput: monitor.macInput, isAway: state.isAway,
-                                 activeDisplays: active) {
+            let decision = Policy.decide(input: port.readInput(), macInput: monitor.macInput, isAway: state.isAway,
+                                         activeDisplays: active)
+            switch state.confirmer.confirm(decision, required: config.confirmReads) {
             case .none:
                 break
             case .away(let input):
