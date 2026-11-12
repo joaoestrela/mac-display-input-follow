@@ -1,0 +1,32 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "Sources/**"
+      - "Makefile"
+      - "Formula/**"
+      - ".github/workflows/**"
+  pull_request:
+    paths:
+      - "Sources/**"
+      - "Makefile"
+      - "Formula/**"
+      - ".github/workflows/**"
+  workflow_dispatch:
+
+jobs:
+  build:
+    # Apple Silicon runner; the tool is arm64 only.
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and run offline checks
+        run: make build check
+      - name: Smoke test
+        run: |
+          .build/display-follow version
+          .build/display-follow list
+          file .build/display-follow | grep -q arm64
