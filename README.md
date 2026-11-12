@@ -29,10 +29,10 @@ Other targets: `make check` (offline logic checks), `make stop`, `make start`, `
 
 ### With Homebrew
 
-The formula lives in this repository. The repository is private, so tap it over SSH:
+The formula lives in this repository, so tap it directly:
 
 ```bash
-brew tap joaoestrela/display-follow git@github.com:joaoestrela/mac-display-input-follow.git
+brew tap joaoestrela/display-follow https://github.com/joaoestrela/mac-display-input-follow
 brew install --HEAD display-follow
 display-follow setup                   # while each monitor shows the Mac
 brew services start display-follow     # logs to $(brew --prefix)/var/log/display-follow.log
