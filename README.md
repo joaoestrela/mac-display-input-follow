@@ -121,3 +121,7 @@ make build check                  # build and run the offline logic checks (Sour
 ```
 
 The build calls `swiftc` directly instead of using SwiftPM, so it only needs the compiler from the Command Line Tools: `swift test` needs a full Xcode install, and SwiftPM's manifest library can be out of step with the compiler in some Command Line Tools installs. CI (`.github/workflows/ci.yml`) runs `make build check` on an Apple Silicon runner for pushes to `main` and pull requests that touch the code.
+
+## License
+
+[MIT](LICENSE)
