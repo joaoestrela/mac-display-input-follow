@@ -29,10 +29,10 @@ Other targets: `make check` (offline logic checks), `make stop`, `make start`, `
 
 ### With Homebrew
 
-The formula lives in this repository. The repository is private, so tap it over SSH:
+The formula lives in this repository, so tap it directly:
 
 ```bash
-brew tap joaoestrela/display-follow git@github.com:joaoestrela/mac-display-input-follow.git
+brew tap joaoestrela/display-follow https://github.com/joaoestrela/mac-display-input-follow
 brew install --HEAD display-follow
 display-follow setup                   # while each monitor shows the Mac
 brew services start display-follow     # logs to $(brew --prefix)/var/log/display-follow.log
@@ -121,3 +121,7 @@ make build check                  # build and run the offline logic checks (Sour
 ```
 
 The build calls `swiftc` directly instead of using SwiftPM, so it only needs the compiler from the Command Line Tools: `swift test` needs a full Xcode install, and SwiftPM's manifest library can be out of step with the compiler in some Command Line Tools installs. CI (`.github/workflows/ci.yml`) runs `make build check` on an Apple Silicon runner for pushes to `main` and pull requests that touch the code.
+
+## License
+
+[MIT](LICENSE)

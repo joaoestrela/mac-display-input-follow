@@ -1,10 +1,11 @@
-# Tap this repository directly (it is private, so over SSH):
-#   brew tap joaoestrela/display-follow git@github.com:joaoestrela/mac-display-input-follow.git
+# Tap this repository directly:
+#   brew tap joaoestrela/display-follow https://github.com/joaoestrela/mac-display-input-follow
 #   brew install --HEAD display-follow
 class DisplayFollow < Formula
   desc "Move macOS windows off an external monitor when it switches to another input"
   homepage "https://github.com/joaoestrela/mac-display-input-follow"
-  head "git@github.com:joaoestrela/mac-display-input-follow.git", branch: "main"
+  license "MIT"
+  head "https://github.com/joaoestrela/mac-display-input-follow.git", branch: "main"
 
   depends_on arch: :arm64
   depends_on :macos
