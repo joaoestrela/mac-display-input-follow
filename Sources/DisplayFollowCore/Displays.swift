@@ -31,6 +31,9 @@ public enum Displays {
 
     public static func activeCount() -> Int { online().filter(\.active).count }
 
+    /// True if any active display is awake. Used to notice a wake whose notification never came.
+    public static func anyAwake() -> Bool { online().contains { $0.active && CGDisplayIsAsleep($0.id) == 0 } }
+
     /// Turns a display on or off in software, as if it were plugged in or unplugged.
     @discardableResult
     public static func setEnabled(_ id: CGDirectDisplayID, _ enabled: Bool) -> Bool {

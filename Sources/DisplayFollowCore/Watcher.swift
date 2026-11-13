@@ -25,6 +25,9 @@ public final class Watcher {
     var ports: [String: PortState] = [:]
     /// Set while the Mac or its displays sleep. DDC polling then could keep a monitor awake.
     var sleeping = false
+    var pausedAt = Date.distantPast
+    /// Consecutive ticks that found every display asleep.
+    var asleepReads = 0
     var resumeAt = Date.distantPast
     /// Ports whose display could not be turned back on at wake yet (macOS can refuse right after waking).
     var wakeRestorePending: [String: Int] = [:]
@@ -102,29 +105,57 @@ public final class Watcher {
 
     func observeSleep() {
         let center = NSWorkspace.shared.notificationCenter
-        for name in [NSWorkspace.willSleepNotification, NSWorkspace.screensDidSleepNotification] {
-            center.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
-                guard let self, !self.sleeping else { return }
-                self.sleeping = true
-                log("paused (\(note.name.rawValue))")
-            }
+        // Only system sleep and wake. The "screens did sleep/wake" notifications are unreliable for an
+        // agent without an NSApplication: missed on real display sleep, and posted on their own while a
+        // display is turned off (a sleep with no wake left the watcher paused). Display sleep is polled.
+        center.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] note in
+            self?.pause(note.name.rawValue)
         }
-        for name in [NSWorkspace.didWakeNotification, NSWorkspace.screensDidWakeNotification] {
-            center.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
-                guard let self else { return }
-                self.resumeAt = Date().addingTimeInterval(self.config.wakeGrace)
-                for key in self.ports.keys {
-                    self.ports[key]?.confirmer = Confirmer()
-                    // Time asleep is not DDC silence.
-                    self.ports[key]?.lastReply = self.resumeAt
-                }
-                if self.sleeping {
-                    log("resuming in \(Int(self.config.wakeGrace))s (\(note.name.rawValue))")
-                    self.restoreForWake()
-                }
-                self.sleeping = false
-            }
+        center.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] note in
+            self?.resume(note.name.rawValue)
         }
+    }
+
+    enum PauseReason { case system, displays }
+    var pausedFor = PauseReason.system
+
+    func pause(_ reason: String, for kind: PauseReason = .system) {
+        guard !sleeping else { return }
+        sleeping = true
+        pausedFor = kind
+        pausedAt = Date()
+        log("paused (\(reason))")
+    }
+
+    func resume(_ reason: String) {
+        resumeAt = Date().addingTimeInterval(config.wakeGrace)
+        for key in ports.keys {
+            ports[key]?.confirmer = Confirmer()
+            // Time asleep is not DDC silence.
+            ports[key]?.lastReply = resumeAt
+        }
+        if sleeping {
+            log("resuming in \(Int(config.wakeGrace))s (\(reason))")
+            restoreForWake()
+        }
+        sleeping = false
+    }
+
+    /// Timers don't fire while the Mac sleeps, so a tick that finds a display awake this long after a
+    /// system-sleep pause means the wake notification was missed: resume anyway.
+    let missedWakeAfter: TimeInterval = 10
+
+    /// Pauses while every display is asleep (two reads in a row, so a display change can't trip it)
+    /// and resumes when one wakes. Returns false while paused.
+    func followDisplaySleep() -> Bool {
+        let awake = Displays.anyAwake()
+        asleepReads = awake ? 0 : asleepReads + 1
+        if !sleeping {
+            if asleepReads >= 2 { pause("displays asleep", for: .displays) }
+        } else if awake, asleepReads == 0, pausedFor == .displays || Date().timeIntervalSince(pausedAt) > missedWakeAfter {
+            resume(pausedFor == .displays ? "displays awake" : "displays awake without a wake notification")
+        }
+        return !sleeping
     }
 
     /// While asleep the other source may have gone away (or the monitor been powered off and on).
@@ -165,7 +196,7 @@ public final class Watcher {
 
     func tick() {
         reloadConfigIfChanged()
-        guard !sleeping else { return }
+        guard followDisplaySleep() else { return }
         retryWakeRestore()
         guard Date() >= resumeAt else { return }
         defer { saveState() }
