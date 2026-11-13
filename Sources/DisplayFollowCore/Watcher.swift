@@ -18,6 +18,8 @@ public final class Watcher {
         var away: AwayMode?
         var confirmer = Confirmer()
         var lastReply = Date()
+        /// `onAway` ran and `onBack` has not yet. Survives the display being turned back on at wake.
+        var hooksAway = false
         var isAway: Bool { away != nil }
     }
     var ports: [String: PortState] = [:]
@@ -65,11 +67,11 @@ public final class Watcher {
     func adoptState() {
         let state = StateStore.load()
         for (port, id) in state.off {
-            ports[port] = PortState(displayID: id, away: .off)
+            ports[port] = PortState(displayID: id, away: .off, hooksAway: true)
             log("display \(id) [\(port)] was turned off by a previous run")
         }
         for (port, id) in state.mirrored {
-            ports[port] = PortState(displayID: id, away: .mirrored)
+            ports[port] = PortState(displayID: id, away: .mirrored, hooksAway: true)
             log("display \(id) [\(port)] was mirrored by a previous run")
         }
     }
@@ -113,10 +115,27 @@ public final class Watcher {
                     // Time asleep is not DDC silence.
                     self.ports[key]?.lastReply = self.resumeAt
                 }
-                if self.sleeping { log("resuming in \(Int(self.config.wakeGrace))s (\(note.name.rawValue))") }
+                if self.sleeping {
+                    log("resuming in \(Int(self.config.wakeGrace))s (\(note.name.rawValue))")
+                    self.restoreForWake()
+                }
                 self.sleeping = false
             }
         }
+    }
+
+    /// While asleep the other source may have gone away (or the monitor been powered off and on).
+    /// A monitor left on an input with no signal never comes back to the Mac by itself, because a
+    /// display turned off sends no signal for its auto input-select to find. So turn every display
+    /// back on at wake; after `wakeGrace` the watcher turns it off again if the other input is still in use.
+    func restoreForWake() {
+        for key in ports.keys where ports[key]?.away == .off || ports[key]?.away == .mirrored {
+            guard var state = ports[key] else { continue }
+            log("\(state.identity?.name ?? "display") [\(key)] turning back on after wake")
+            _ = undo(&state, id: state.displayID)
+            ports[key] = state
+        }
+        saveState()
     }
 
     func tick() {
@@ -184,14 +203,29 @@ public final class Watcher {
                     log("\(label)")
                     state.away = .hooksOnly
                 }
-                Hooks.run(monitor.onAway, event: "away", monitor: monitor.name, port: port.port, input: input, dryRun: dryRun)
+                // Already away before a wake restore: the hook has run.
+                if !state.hooksAway {
+                    Hooks.run(monitor.onAway, event: "away", monitor: monitor.name, port: port.port, input: input, dryRun: dryRun)
+                    state.hooksAway = true
+                }
             case .back(let input):
                 log("\(monitor.name) [\(port.port)] back on input \(input)")
                 if undo(&state, id: id) { active += 1 }
-                Hooks.run(monitor.onBack, event: "back", monitor: monitor.name, port: port.port, input: input, dryRun: dryRun)
+                runBackHook(&state, monitor: monitor, port: port.port, input: input)
+            }
+            // Turned back on at wake and found on the Mac's input: nothing to undo, but `onBack` is still due.
+            if !state.isAway, state.hooksAway, let input, input == monitor.macInput {
+                log("\(monitor.name) [\(port.port)] back on input \(input)")
+                runBackHook(&state, monitor: monitor, port: port.port, input: input)
             }
         }
         ports = seen
+    }
+
+    func runBackHook(_ state: inout PortState, monitor: MonitorConfig, port: String, input: Int) {
+        guard state.hooksAway else { return }
+        Hooks.run(monitor.onBack, event: "back", monitor: monitor.name, port: port, input: input, dryRun: dryRun)
+        state.hooksAway = false
     }
 
     /// Reverses whatever was done when the monitor went away. Returns true if a display was turned back on.

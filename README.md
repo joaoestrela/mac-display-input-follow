@@ -70,7 +70,7 @@ To cut a release, set the version in `Sources/DisplayFollowCore/Version.swift`, 
 
 - `interval`: seconds between DDC reads.
 - `confirmReads`: how many reads in a row must agree before acting, so one bad reading can't turn a monitor off. With the defaults, a switch takes effect in about 2 seconds.
-- `wakeGrace`: seconds to wait after the Mac or its displays wake before acting. Polling pauses while the Mac or its displays sleep, so DDC traffic can't keep a monitor awake.
+- `wakeGrace`: seconds to wait after the Mac or its displays wake before acting. Polling pauses while the Mac or its displays sleep, so DDC traffic can't keep a monitor awake. Displays turned off or mirrored are turned back on at wake and turned off again after `wakeGrace` if the monitor still shows another input.
 - `ddcLossTimeout`: seconds without a DDC reply after which a monitor that was turned off is turned back on (for example, when it was powered off). `0` disables this.
 - `macInput`: the input value the monitor reports while showing this Mac. Run `setup` again if you move the Mac to another port; it keeps the monitor's `action` and hooks.
 - `action`: what to do while the monitor shows another input.
@@ -86,6 +86,7 @@ The watcher reloads the file when it changes; no restart needed. `display-follow
 A display turned off in software isn't listed by macOS any more, so `display-follow` records each display it turns off or mirrors in `~/.local/state/display-follow/state.json` (or `$XDG_STATE_HOME`) and undoes that when:
 
 - the watcher stops (`make stop`, `make uninstall`, logout, Ctrl-C);
+- the Mac or its displays wake, in case the other source went away during sleep (a display turned off sends no signal, so a monitor left on an empty input would never find its way back);
 - the monitor stops answering over DDC for `ddcLossTimeout` seconds;
 - you run `display-follow restore`.
 
