@@ -39,8 +39,10 @@ install: build
 start:
 	launchctl bootstrap $(DOMAIN) $(PLIST)
 
+# bootout returns before launchd has unloaded the job; a bootstrap right after it fails with error 5.
 stop:
 	-launchctl bootout $(DOMAIN)/$(LABEL)
+	@for i in 1 2 3 4 5 6 7 8 9 10; do launchctl print $(DOMAIN)/$(LABEL) >/dev/null 2>&1 || exit 0; sleep 0.5; done
 
 restart: stop start
 
