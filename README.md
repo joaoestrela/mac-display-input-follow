@@ -111,7 +111,7 @@ A monitor that disappears while off (unplugged, or its link dropping out in stan
 - Uses private Apple APIs: `CGSConfigureDisplayEnabled` to turn the display on and off, `IOAVServiceReadI2C`/`IOAVServiceWriteI2C` for DDC, and `CoreDisplay_DisplayCreateInfoDictionary` to match monitors to displays. Mirroring uses the public `CGConfigureDisplayMirrorOfDisplay`. A macOS update could break them. If that happens, the display just stays on as normal.
 - Monitors are told apart by their EDID vendor, model and serial number. Identical monitors that report the same serial (many use a placeholder) share one config entry, so they must be connected to the same input number.
 - Each monitor's DDC service is matched to its display through the Apple Silicon port name (`dispextN`) in the IORegistry, which appears in both the DDC service's path and the display's `IODisplayLocation`.
-- If the monitor auto-scans inputs when it sees no signal, it may jump away from the Mac before the Mac turns the display back on. Turn off auto input-select on the monitor.
+- If the monitor auto-scans inputs when it sees no signal, it may jump to another input in the seconds before the Mac's signal appears after the display is turned back on. For 15 seconds after turning a display on, `display-follow` ignores the monitor reporting another input, so switching away again right after coming back takes up to 15 seconds to take effect. If the monitor still jumps away, turn off auto input-select on the monitor.
 - If a display ever stays off, run `display-follow restore`, or unplug and replug the cable.
 
 ## Development

@@ -34,6 +34,9 @@ let t0 = Date(timeIntervalSince1970: 1000)
 check(!Policy.ddcLost(lastReply: t0, now: t0.addingTimeInterval(30), timeout: 30), "not lost at the limit")
 check(Policy.ddcLost(lastReply: t0, now: t0.addingTimeInterval(31), timeout: 30), "lost after timeout")
 check(!Policy.ddcLost(lastReply: t0, now: t0.addingTimeInterval(9999), timeout: 0), "timeout 0 disables")
+check(!Policy.settling(turnedOnAt: nil, now: t0), "never turned on: not settling")
+check(Policy.settling(turnedOnAt: t0, now: t0.addingTimeInterval(6)), "settling 6s after turning on")
+check(!Policy.settling(turnedOnAt: t0, now: t0.addingTimeInterval(Policy.settleAfterTurningOn)), "settled at the limit")
 
 // State
 let both = RuntimeState(off: ["dispext1": 2], mirrored: ["dispext2": 3])
