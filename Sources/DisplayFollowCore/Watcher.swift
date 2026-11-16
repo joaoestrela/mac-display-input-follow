@@ -22,6 +22,9 @@ public final class Watcher {
         var hooksAway = false
         /// Set while the port is missing and the display is still off: when to try turning it on next.
         var nextRestoreTry: Date?
+        /// When this tool last turned the display back on; see `Policy.settling`.
+        var turnedOnAt: Date?
+        var settleLogged = false
         var isAway: Bool { away != nil }
     }
     var ports: [String: PortState] = [:]
@@ -262,8 +265,15 @@ public final class Watcher {
                 if undo(&state, id: id) { active += 1 }
                 continue
             }
-            let decision = Policy.decide(input: input, macInput: monitor.macInput, isAway: state.isAway,
+            var decision = Policy.decide(input: input, macInput: monitor.macInput, isAway: state.isAway,
                                          activeDisplays: active, needsOtherDisplay: monitor.action != .none)
+            if case .away(let other) = decision, Policy.settling(turnedOnAt: state.turnedOnAt, now: now) {
+                if !state.settleLogged {
+                    state.settleLogged = true
+                    log("\(monitor.name) [\(port.port)] reports input \(other) while settling after being turned on; ignoring")
+                }
+                decision = .none
+            }
             switch state.confirmer.confirm(decision, required: config.confirmReads) {
             case .none:
                 break
@@ -324,6 +334,8 @@ public final class Watcher {
                 return false
             }
             state.away = nil
+            state.turnedOnAt = Date()
+            state.settleLogged = false
             return true
         case .mirrored:
             if !quiet { log("stopping mirroring of display \(id)") }

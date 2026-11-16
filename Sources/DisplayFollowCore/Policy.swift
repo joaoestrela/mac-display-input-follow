@@ -32,6 +32,16 @@ extension Policy {
     public static func ddcLost(lastReply: Date, now: Date, timeout: TimeInterval) -> Bool {
         timeout > 0 && now.timeIntervalSince(lastReply) > timeout
     }
+
+    /// Right after a display is turned back on, the Mac's signal takes a few seconds to appear, and a
+    /// monitor with auto input-select can jump to another input meanwhile. Readings of another input
+    /// are ignored for this long, so the display isn't turned straight back off.
+    public static let settleAfterTurningOn: TimeInterval = 15
+
+    public static func settling(turnedOnAt: Date?, now: Date, window: TimeInterval = settleAfterTurningOn) -> Bool {
+        guard let turnedOnAt else { return false }
+        return now.timeIntervalSince(turnedOnAt) < window
+    }
 }
 
 /// Acts on a decision only after it has come out the same for `required` reads in a row,
