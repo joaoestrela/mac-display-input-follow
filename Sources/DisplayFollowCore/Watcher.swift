@@ -20,6 +20,8 @@ public final class Watcher {
         var lastReply = Date()
         /// `onAway` ran and `onBack` has not yet. Survives the display being turned back on at wake.
         var hooksAway = false
+        /// Set while the port is missing and the display is still off: when to try turning it on next.
+        var nextRestoreTry: Date?
         var isAway: Bool { away != nil }
     }
     var ports: [String: PortState] = [:]
@@ -144,6 +146,7 @@ public final class Watcher {
     /// Timers don't fire while the Mac sleeps, so a tick that finds a display awake this long after a
     /// system-sleep pause means the wake notification was missed: resume anyway.
     let missedWakeAfter: TimeInterval = 10
+    let missingRetryInterval: TimeInterval = 15
 
     /// Pauses while every display is asleep (two reads in a row, so a display change can't trip it)
     /// and resumes when one wakes. Returns false while paused.
@@ -204,14 +207,33 @@ public final class Watcher {
         var seen: [String: PortState] = [:]
         let connected = Ports.external()
 
-        // A monitor unplugged while off: try to turn it on and forget it (macOS re-enables it on reconnect).
-        for (port, state) in ports where state.away == .off && !connected.contains(where: { $0.port == port }) {
-            if let id = state.displayID, !dryRun { Displays.setEnabled(id, true) }
-            log("\(state.identity?.name ?? "display") [\(port)] disconnected while off; forgetting it")
+        // A monitor that disappeared while off (unplugged, or its link dropped out briefly, e.g. in standby):
+        // turn it back on and forget it only once that works. A display left off and forgotten would stay
+        // off for good. A failed attempt can hang for seconds, so retry every `missingRetryInterval`.
+        for (port, var state) in ports where state.away == .off && !connected.contains(where: { $0.port == port }) {
+            let name = "\(state.identity?.name ?? "display") [\(port)]"
+            guard let id = state.displayID, !dryRun else {
+                log("\(name) disconnected while off; forgetting it")
+                continue
+            }
+            if let next = state.nextRestoreTry, Date() < next {
+                seen[port] = state
+                continue
+            }
+            if Displays.setEnabled(id, true) {
+                log("\(name) disconnected while off; turned display \(id) back on and forgot it")
+                continue
+            }
+            if state.nextRestoreTry == nil {
+                log("\(name) disconnected while off and display \(id) could not be turned on; retrying every \(Int(missingRetryInterval))s")
+            }
+            state.nextRestoreTry = Date().addingTimeInterval(missingRetryInterval)
+            seen[port] = state
         }
 
         for port in connected {
             var state = ports[port.port] ?? PortState()
+            state.nextRestoreTry = nil
             if let identity = port.identity { state.identity = identity }
             if let id = port.displayID { state.displayID = id }
             // Undone outside this tool (re-plugged, turned on, unmirrored): forget it. A dry run never changes anything.

@@ -90,7 +90,7 @@ A display turned off in software isn't listed by macOS any more, so `display-fol
 - the monitor stops answering over DDC for `ddcLossTimeout` seconds;
 - you run `display-follow restore`.
 
-A monitor unplugged while off is forgotten; macOS turns it on again when it is reconnected. After a crash, the restarted watcher picks up the state file and keeps following those displays.
+A monitor that disappears while off (unplugged, or its link dropping out in standby) is turned back on and then forgotten. If macOS refuses, the watcher keeps it in the state file and retries every 15 seconds until it works or the monitor comes back. After a crash, the restarted watcher picks up the state file and keeps following those displays.
 
 ## Commands
 
