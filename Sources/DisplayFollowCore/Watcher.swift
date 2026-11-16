@@ -153,15 +153,51 @@ public final class Watcher {
 
     /// Pauses while every display is asleep (two reads in a row, so a display change can't trip it)
     /// and resumes when one wakes. Returns false while paused.
+    ///
+    /// This process's own view of the displays can go stale (seen after a system sleep: every display
+    /// still read asleep an hour after they woke, so the watcher never resumed). It is only a cheap first
+    /// check; pausing and resuming go by a fresh process (`display-follow displays-awake`), asked at
+    /// most every `freshCheckInterval`.
     func followDisplaySleep() -> Bool {
-        let awake = Displays.anyAwake()
-        asleepReads = awake ? 0 : asleepReads + 1
+        let now = Date()
         if !sleeping {
-            if asleepReads >= 2 { pause("displays asleep", for: .displays) }
-        } else if awake, asleepReads == 0, pausedFor == .displays || Date().timeIntervalSince(pausedAt) > missedWakeAfter {
-            resume(pausedFor == .displays ? "displays awake" : "displays awake without a wake notification")
+            asleepReads = Displays.anyAwake() ? 0 : asleepReads + 1
+            guard asleepReads >= 2, now >= nextFreshCheck else { return true }
+            nextFreshCheck = now.addingTimeInterval(freshCheckInterval)
+            if freshAnyAwake() ?? false {
+                if !loggedStaleView { log("displays read asleep here but awake in a fresh process; not pausing"); loggedStaleView = true }
+            } else {
+                pause("displays asleep", for: .displays)
+            }
+        } else if pausedFor == .displays || now.timeIntervalSince(pausedAt) > missedWakeAfter, now >= nextFreshCheck {
+            nextFreshCheck = now.addingTimeInterval(freshCheckInterval)
+            if freshAnyAwake() ?? Displays.anyAwake() {
+                asleepReads = 0
+                resume(pausedFor == .displays ? "displays awake" : "displays awake without a wake notification")
+            }
         }
         return !sleeping
+    }
+
+    let freshCheckInterval: TimeInterval = 3
+    var nextFreshCheck = Date.distantPast
+    var loggedStaleView = false
+
+    /// Asks a fresh copy of this binary whether any display is awake. nil if that could not be run.
+    func freshAnyAwake() -> Bool? {
+        guard let exe = Bundle.main.executableURL else { return nil }
+        let process = Process()
+        process.executableURL = exe
+        process.arguments = ["displays-awake"]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        do { try process.run() } catch { return nil }
+        process.waitUntilExit()
+        switch process.terminationStatus {
+        case 0: return true
+        case 1: return false
+        default: return nil
+        }
     }
 
     /// While asleep the other source may have gone away (or the monitor been powered off and on).
