@@ -22,10 +22,12 @@ It runs as a `launchd` login item and checks the monitors once a second. Each ex
 Run this while the monitors are showing the Mac:
 
 ```bash
-make install     # builds display-follow, installs to ~/.local/bin, runs setup if needed, loads the login item
+make install     # builds display-follow, installs to ~/.local/bin, runs setup if there is no config yet, loads the login item
 ```
 
-Other targets: `make check` (offline logic checks), `make stop`, `make start`, `make restart`, `make logs`, `make uninstall`.
+Other targets: `make check` (offline checks), `make stop`, `make start`, `make restart`, `make logs`, `make uninstall` (stops the watcher, which turns displays back on, and removes the binary, login item and state; your config is kept).
+
+Only one watcher runs at a time: a second one (say, from `brew services` next to `make install`) logs that another is running and exits. The log is moved to `display-follow.log.1` when it passes 5 MB.
 
 ### With Homebrew
 
@@ -38,11 +40,11 @@ display-follow setup                   # while each monitor shows the Mac
 brew services start display-follow     # logs to $(brew --prefix)/var/log/display-follow.log
 ```
 
-`brew upgrade --fetch-HEAD display-follow` picks up new commits. Use either Homebrew or `make install`, not both: two watchers would fight.
+`brew upgrade --fetch-HEAD display-follow` picks up new commits. Use either Homebrew or `make install`, not both: only one of them would run.
 
 ### From a release
 
-Each `v*` tag builds an arm64 binary and attaches `display-follow-<tag>-macos-arm64.tar.gz` (with a `.sha256`) to a GitHub release. The binary is ad-hoc signed, not notarized: after downloading, clear the quarantine flag with `xattr -d com.apple.quarantine display-follow`.
+Each `v*` tag builds an arm64 binary and attaches `display-follow-<tag>-macos-arm64.tar.gz` (with a `.sha256`) to a GitHub release. Unpack it and run `./install.sh` while each monitor shows the Mac: it installs the binary to `~/.local/bin`, runs setup if there is no config yet and loads the login item, like `make install`. The binary is ad-hoc signed, not notarized; `install.sh` clears the quarantine flag.
 
 To cut a release, set the version in `Sources/DisplayFollowCore/Version.swift`, commit, then push a matching tag (`v0.2.0` for `0.2.0`); the workflow fails if they differ.
 
@@ -109,6 +111,7 @@ When the watcher stops (`make stop`, `make uninstall`, logout, Ctrl-C) or you ru
 | `display-follow restore` | Undo every display `display-follow` turned off or mirrored |
 | `display-follow off <id>` | Turn a display off in software |
 | `display-follow on <id>` | Turn it back on |
+| `display-follow version` | Print the version |
 
 ## Caveats
 
