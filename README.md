@@ -22,10 +22,12 @@ It runs as a `launchd` login item and checks the monitors once a second. Each ex
 Run this while the monitors are showing the Mac:
 
 ```bash
-make install     # builds display-follow, installs to ~/.local/bin, runs setup if needed, loads the login item
+make install     # builds display-follow, installs to ~/.local/bin, runs setup if there is no config yet, loads the login item
 ```
 
-Other targets: `make check` (offline logic checks), `make stop`, `make start`, `make restart`, `make logs`, `make uninstall`.
+Other targets: `make check` (offline checks), `make stop`, `make start`, `make restart`, `make logs`, `make uninstall` (stops the watcher, which turns displays back on, and removes the binary, login item and state; your config is kept).
+
+Only one watcher runs at a time: a second one (say, from `brew services` next to `make install`) logs that another is running and exits. The log is moved to `display-follow.log.1` when it passes 5 MB.
 
 ### With Homebrew
 
@@ -38,11 +40,11 @@ display-follow setup                   # while each monitor shows the Mac
 brew services start display-follow     # logs to $(brew --prefix)/var/log/display-follow.log
 ```
 
-`brew upgrade --fetch-HEAD display-follow` picks up new commits. Use either Homebrew or `make install`, not both: two watchers would fight.
+`brew upgrade --fetch-HEAD display-follow` picks up new commits. Use either Homebrew or `make install`, not both: only one of them would run.
 
 ### From a release
 
-Each `v*` tag builds an arm64 binary and attaches `display-follow-<tag>-macos-arm64.tar.gz` (with a `.sha256`) to a GitHub release. The binary is ad-hoc signed, not notarized: after downloading, clear the quarantine flag with `xattr -d com.apple.quarantine display-follow`.
+Each `v*` tag builds an arm64 binary and attaches `display-follow-<tag>-macos-arm64.tar.gz` (with a `.sha256`) to a GitHub release. Unpack it and run `./install.sh` while each monitor shows the Mac: it installs the binary to `~/.local/bin`, runs setup if there is no config yet and loads the login item, like `make install`. The binary is ad-hoc signed, not notarized; `install.sh` clears the quarantine flag.
 
 To cut a release, set the version in `Sources/DisplayFollowCore/Version.swift`, commit, then push a matching tag (`v0.2.0` for `0.2.0`); the workflow fails if they differ.
 
@@ -70,7 +72,7 @@ To cut a release, set the version in `Sources/DisplayFollowCore/Version.swift`, 
 
 - `interval`: seconds between DDC reads.
 - `confirmReads`: how many reads in a row must agree before acting, so one bad reading can't turn a monitor off. With the defaults, a switch takes effect in about 2 seconds.
-- `wakeGrace`: seconds to wait after the Mac or its displays wake before acting. Polling pauses while the Mac or its displays sleep, so DDC traffic can't keep a monitor awake. Dark wakes (the short maintenance wakes macOS does with the screens off) count as asleep. Displays turned off or mirrored are turned back on at wake and turned off again after `wakeGrace` if the monitor still shows another input.
+- `wakeGrace`: seconds to wait after the Mac or its displays wake before acting. Polling pauses while the Mac or its displays sleep, so DDC traffic can't keep a monitor awake. Dark wakes (the short maintenance wakes macOS does with the screens off) count as asleep. Displays turned off are turned back on once `wakeGrace` is over, and turned off again if the monitor still shows another input once the 15-second settle window after turning on has passed (see Caveats).
 - `ddcLossTimeout`: seconds without a DDC reply after which a monitor that was turned off is turned back on (for example, when it was powered off). `0` disables this.
 - `macInput`: the input value the monitor reports while showing this Mac. Run `setup` again if you move the Mac to another port; it keeps the monitor's `action` and hooks.
 - `action`: what to do while the monitor shows another input.
@@ -83,14 +85,19 @@ The watcher reloads the file when it changes; no restart needed. `display-follow
 
 ## Safety
 
-A display turned off in software isn't listed by macOS any more, so `display-follow` records each display it turns off or mirrors in `~/.local/state/display-follow/state.json` (or `$XDG_STATE_HOME`) and undoes that when:
+A display turned off in software isn't listed by macOS any more, so `display-follow` records each display it turns off or mirrors, and the last display ID seen on each port, in `~/.local/state/display-follow/state.json` (or `$XDG_STATE_HOME`). The record is written before a display is turned off.
 
-- the watcher stops (`make stop`, `make uninstall`, logout, Ctrl-C);
-- the Mac or its displays wake, in case the other source went away during sleep (a display turned off sends no signal, so a monitor left on an empty input would never find its way back);
+Every second the watcher compares what it sees with what should be. A display that is off is turned back on when:
+
+- its monitor shows the Mac's input;
+- the Mac or its displays wake (once `wakeGrace` is over), in case the other source went away during sleep: a display turned off sends no signal, so a monitor left on an empty input would never find its way back;
 - the monitor stops answering over DDC for `ddcLossTimeout` seconds;
-- you run `display-follow restore`.
+- nothing else is on screen (for example, the lid is closed);
+- its monitor is removed from the config, or disappears (unplugged, or its link dropping out in standby).
 
-A monitor that disappears while off (unplugged, or its link dropping out in standby) is turned back on and then forgotten. If macOS refuses, the watcher keeps it in the state file and retries every 15 seconds until it works or the monitor comes back. After a crash, the restarted watcher picks up the state file and keeps following those displays.
+This doesn't depend on how the display got there: a display found off on a port the watcher knows is followed the same way, even after a crash or when macOS reported a change as failed that happened anyway. If macOS refuses to turn a display on, the watcher retries, quickly at first and then once a minute, until it works; it never gives up.
+
+When the watcher stops (`make stop`, `make uninstall`, logout, Ctrl-C) or you run `display-follow restore`, it turns back on every display it turned off. Displays that can't be turned on stay in the state file for the next run.
 
 ## Commands
 
@@ -104,15 +111,16 @@ A monitor that disappears while off (unplugged, or its link dropping out in stan
 | `display-follow restore` | Undo every display `display-follow` turned off or mirrored |
 | `display-follow off <id>` | Turn a display off in software |
 | `display-follow on <id>` | Turn it back on |
+| `display-follow version` | Print the version |
 
 ## Caveats
 
 - A display is never turned off or mirrored away if it is the only active one (for example, with the laptop lid closed). Hooks still run.
-- Uses private Apple APIs: `CGSConfigureDisplayEnabled` to turn the display on and off, `IOAVServiceReadI2C`/`IOAVServiceWriteI2C` for DDC, and `CoreDisplay_DisplayCreateInfoDictionary` to match monitors to displays. Mirroring uses the public `CGConfigureDisplayMirrorOfDisplay`. A macOS update could break them. If that happens, the display just stays on as normal.
+- Uses private Apple APIs: `CGSConfigureDisplayEnabled` to turn the display on and off, `IOAVServiceReadI2C`/`IOAVServiceWriteI2C` for DDC, and `CoreDisplay_DisplayCreateInfoDictionary` to match monitors to displays. Mirroring uses the public `CGConfigureDisplayMirrorOfDisplay`. A macOS update could break them. They are looked up at runtime: if one is gone, the watcher logs which and exits (without being restarted), and displays stay as they are.
 - Monitors are told apart by their EDID vendor, model and serial number. Identical monitors that report the same serial (many use a placeholder) share one config entry, so they must be connected to the same input number.
 - Each monitor's DDC service is matched to its display through the Apple Silicon port name (`dispextN`) in the IORegistry, which appears in both the DDC service's path and the display's `IODisplayLocation`.
 - If the monitor auto-scans inputs when it sees no signal, it may jump to another input in the seconds before the Mac's signal appears after the display is turned back on. For 15 seconds after turning a display on, `display-follow` ignores the monitor reporting another input, so switching away again right after coming back takes up to 15 seconds to take effect. If the monitor still jumps away, turn off auto input-select on the monitor.
-- If a display ever stays off, run `display-follow restore`, or unplug and replug the cable.
+- If a display ever stays off, run `display-follow restore`, or unplug and replug the cable. Display changes only last for the login session, so logging out and back in turns it on too.
 
 ## Development
 

@@ -24,7 +24,9 @@ let command = args.isEmpty ? "" : args.removeFirst()
 
 switch command {
 case "setup":
-    var config = (try? ConfigStore.load()) ?? Config()
+    // An invalid config is not replaced: it may hold actions and hooks that would be lost.
+    var config: Config
+    do { config = try ConfigStore.load() ?? Config() } catch { fail("invalid config at \(Paths.config.path): \(error)\nfix or remove it, then run setup again") }
     var saved = 0
     for port in Ports.external() {
         guard let identity = port.identity, port.displayID != nil else { continue }
@@ -62,7 +64,22 @@ case "status":
         print("\(name) [\(port.port)]: \(mac); \(state); \(showing)")
     }
 case "run":
-    Watcher(dryRun: args.contains("--dry-run")).run()
+    let dryRun = args.contains("--dry-run")
+    guard dryRun || SingleInstance.acquire() else {
+        // Exit 0: launchd only restarts the watcher after a failure, so this one stays stopped.
+        log("another display-follow watcher is running (lock \(SingleInstance.url.path)); exiting")
+        exit(0)
+    }
+    LogFile.rotateIfNeeded()
+    let missing = PrivateAPI.missing
+    guard missing.isEmpty else {
+        // Exit 0 so launchd doesn't restart it every few seconds; displays are left as they are.
+        log("this macOS lacks private functions display-follow needs (\(missing.joined(separator: ", "))); exiting")
+        exit(0)
+    }
+    let rotation = Timer.scheduledTimer(withTimeInterval: 3600, repeats: true) { _ in LogFile.rotateIfNeeded() }
+    _ = rotation
+    Watcher(dryRun: dryRun).run()
 case "list":
     let portByDisplay = Dictionary(Ports.external().compactMap { p in p.displayID.map { ($0, p.port) } },
                                    uniquingKeysWith: { first, _ in first })
@@ -84,9 +101,14 @@ case "restore":
 case "on", "off":
     guard let id = args.first.flatMap(UInt32.init) else { fail("need a display id (see `display-follow list`)", code: 2) }
     guard Displays.setEnabled(id, command == "on") else { fail("could not turn display \(id) \(command)") }
-case "displays-awake":
+case "mirror", "unmirror":
+    // Used by the watcher, which makes display changes in a child process.
+    let ids = args.compactMap(UInt32.init)
+    guard let id = ids.first, command == "unmirror" || ids.count == 2 else { fail("usage: mirror <id> <target> | unmirror <id>", code: 2) }
+    guard Displays.setMirror(id, of: command == "mirror" ? ids[1] : nil) else { fail("could not \(command) display \(id)") }
+case "display-state":
     // Used by the watcher: a fresh process sees the current display state, a long-running one may not.
-    exit(Displays.anyAwake() ? 0 : 1)
+    exit(Displays.state().rawValue)
 
 case "version", "--version":
     print(version)

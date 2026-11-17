@@ -19,7 +19,7 @@ $(BIN): $(CORE) Sources/display-follow/main.swift
 	@mkdir -p $(BUILD)
 	$(SWIFTC) $(SWIFTFLAGS) -module-name DisplayFollow -o $@ $^
 
-$(BUILD)/selfcheck: $(CORE) Sources/selfcheck/main.swift
+$(BUILD)/selfcheck: $(CORE) $(wildcard Sources/selfcheck/*.swift)
 	@mkdir -p $(BUILD)
 	$(SWIFTC) $(SWIFTFLAGS) -module-name SelfCheck -o $@ $^
 
@@ -33,7 +33,7 @@ install: build
 	sed -e 's#@LABEL@#$(LABEL)#' -e 's#@BINDIR@#$(BINDIR)#' -e 's#@LOG@#$(LOG)#' \
 	    launchd/com.display-follow.plist.in > $(PLIST)
 	plutil -lint $(PLIST)
-	@$(BINDIR)/display-follow status >/dev/null 2>&1 || $(BINDIR)/display-follow setup
+	@test -f "$${XDG_CONFIG_HOME:-$(HOME)/.config}/display-follow/config.json" || $(BINDIR)/display-follow setup
 	$(MAKE) restart
 
 start:
@@ -46,9 +46,11 @@ stop:
 
 restart: stop start
 
+# Stopping turns back on any display it turned off. The config is kept.
 uninstall: stop
 	rm -f $(PLIST) $(BINDIR)/display-follow $(BINDIR)/extdisplay
-	rm -rf $(HOME)/.local/share/display-follow
+	rm -rf "$${XDG_STATE_HOME:-$(HOME)/.local/state}/display-follow"
+	@echo "kept your config in $${XDG_CONFIG_HOME:-$(HOME)/.config}/display-follow"
 
 logs:
 	tail -f $(LOG)

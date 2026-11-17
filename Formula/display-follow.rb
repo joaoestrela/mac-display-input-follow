@@ -17,7 +17,7 @@ class DisplayFollow < Formula
 
   service do
     run [opt_bin/"display-follow", "run"]
-    keep_alive true
+    keep_alive successful_exit: false
     process_type :background
     log_path var/"log/display-follow.log"
     error_log_path var/"log/display-follow.log"

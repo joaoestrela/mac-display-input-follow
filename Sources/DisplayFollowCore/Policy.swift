@@ -38,6 +38,13 @@ extension Policy {
     /// are ignored for this long, so the display isn't turned straight back off.
     public static let settleAfterTurningOn: TimeInterval = 15
 
+    /// Seconds to wait before retrying to turn a display on after `attempts` failures: quick at first,
+    /// then once a minute, for as long as it takes.
+    public static func restoreBackoff(attempts: Int) -> TimeInterval {
+        let steps: [TimeInterval] = [2, 5, 10, 15, 30]
+        return attempts <= 0 ? 0 : attempts <= steps.count ? steps[attempts - 1] : 60
+    }
+
     public static func settling(turnedOnAt: Date?, now: Date, window: TimeInterval = settleAfterTurningOn) -> Bool {
         guard let turnedOnAt else { return false }
         return now.timeIntervalSince(turnedOnAt) < window

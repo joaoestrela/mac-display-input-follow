@@ -7,12 +7,16 @@ on:
       - "Sources/**"
       - "Makefile"
       - "Formula/**"
+      - "launchd/**"
+      - "scripts/**"
       - ".github/workflows/**"
   pull_request:
     paths:
       - "Sources/**"
       - "Makefile"
       - "Formula/**"
+      - "launchd/**"
+      - "scripts/**"
       - ".github/workflows/**"
   workflow_dispatch:
 
@@ -25,6 +29,10 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build and run offline checks
         run: make build check
+      - name: Check the Homebrew formula
+        run: brew style Formula/display-follow.rb
+      - name: Check the release install script
+        run: sh -n scripts/install.sh
       - name: Smoke test
         run: |
           .build/display-follow version
