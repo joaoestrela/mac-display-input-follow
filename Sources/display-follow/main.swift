@@ -71,6 +71,12 @@ case "run":
         exit(0)
     }
     LogFile.rotateIfNeeded()
+    let missing = PrivateAPI.missing
+    guard missing.isEmpty else {
+        // Exit 0 so launchd doesn't restart it every few seconds; displays are left as they are.
+        log("this macOS lacks private functions display-follow needs (\(missing.joined(separator: ", "))); exiting")
+        exit(0)
+    }
     let rotation = Timer.scheduledTimer(withTimeInterval: 3600, repeats: true) { _ in LogFile.rotateIfNeeded() }
     _ = rotation
     Watcher(dryRun: dryRun).run()

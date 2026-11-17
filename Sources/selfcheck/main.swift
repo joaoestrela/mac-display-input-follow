@@ -107,5 +107,7 @@ check(flock(second, LOCK_EX | LOCK_NB) != 0, "second watcher does not")
 close(second)
 unsetenv("XDG_STATE_HOME")
 
+check(PrivateAPI.missing.isEmpty, "private functions found at runtime: missing \(PrivateAPI.missing)")
+
 if failures > 0 { print("\(failures) check(s) failed"); exit(1) }
 print("all checks passed")
