@@ -38,7 +38,11 @@ final class FakeSystem: System {
             .map { PortSnapshot(port: $0.key, identity: $0.value.identity, displayID: $0.value.online ? $0.value.displayID : nil) }
     }
 
-    func readInput(port: String) -> Int? { monitors[port].flatMap { $0.connected ? $0.input : nil } }
+    var reads = 0
+    func readInput(port: String) -> Int? {
+        reads += 1
+        return monitors[port].flatMap { $0.connected ? $0.input : nil }
+    }
     func activeDisplayCount() -> Int { (builtinActive ? 1 : 0) + monitors.values.filter { $0.connected && $0.online }.count }
     func displayState() -> Displays.State { local }
     func freshDisplayState() -> Displays.State? { fresh }
@@ -320,6 +324,16 @@ func simulationChecks() {
         fake.graphics = false
         run(w, fake, seconds: 2)
         if case .pausedForSystem = w.activity {} else { check(false, "sim: display pause upgraded to system") }
+    }
+    do {  // a silent monitor is read less often, and still restored after ddcLossTimeout
+        let (w, fake) = simulation()
+        fake.display.input = 15
+        run(w, fake, seconds: 3)
+        fake.display.input = nil
+        fake.reads = 0
+        run(w, fake, seconds: 60)
+        check(fake.reads < 25, "sim: silent monitor read about every 5s (\(fake.reads) reads in a minute)")
+        check(fake.display.online, "sim: silent monitor restored after ddcLossTimeout")
     }
     do {  // stop: entries that could not be restored stay in the state file
         let state = RuntimeState(off: ["dispext1": 3, "dispext2": 4])

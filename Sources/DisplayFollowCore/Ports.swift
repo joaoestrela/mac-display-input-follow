@@ -15,7 +15,9 @@ public struct ExternalPort {
     /// Display ID while the display is online; a display disabled in software is not listed.
     public let displayID: CGDirectDisplayID?
 
-    public func readInput() -> Int? { DDC.read(DDC.inputSource, service: avService).map(DDCPacket.inputValue) }
+    public func readInput(attempts: Int = 5) -> Int? {
+        DDC.read(DDC.inputSource, service: avService, attempts: attempts).map(DDCPacket.inputValue)
+    }
 }
 
 public struct MonitorIdentity: Equatable {

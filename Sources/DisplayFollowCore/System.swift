@@ -39,18 +39,32 @@ public protocol System: AnyObject {
 public final class RealSystem: System {
     /// The last discovered ports, kept so DDC reads reuse their AV services.
     var discovered: [String: ExternalPort] = [:]
+    var snapshots: [PortSnapshot] = []
+    var discoveredAt = Date.distantPast
+    var discoveredOnline: [CGDirectDisplayID] = []
+    /// Port discovery walks the IORegistry and CoreDisplay; it is redone at most this often, or sooner when
+    /// the set of online displays changes or a display change completes.
+    static let discoveryInterval: TimeInterval = 5
 
     public init() {}
 
     public var now: Date { Date() }
 
     public func externalPorts() -> [PortSnapshot] {
+        let online = Displays.online().map(\.id).sorted()
+        if now.timeIntervalSince(discoveredAt) < Self.discoveryInterval, online == discoveredOnline { return snapshots }
         let ports = Ports.external()
         discovered = Dictionary(ports.map { ($0.port, $0) }, uniquingKeysWith: { first, _ in first })
-        return ports.map { PortSnapshot(port: $0.port, identity: $0.identity, displayID: $0.displayID) }
+        snapshots = ports.map { PortSnapshot(port: $0.port, identity: $0.identity, displayID: $0.displayID) }
+        discoveredAt = now
+        discoveredOnline = online
+        return snapshots
     }
 
-    public func readInput(port: String) -> Int? { discovered[port]?.readInput() }
+    /// Forces the next `externalPorts` to rediscover.
+    func invalidatePorts() { discoveredAt = .distantPast }
+
+    public func readInput(port: String) -> Int? { discovered[port]?.readInput(attempts: 2) }
     public func activeDisplayCount() -> Int { Displays.activeCount() }
     public func displayState() -> Displays.State { Displays.state() }
 
@@ -73,8 +87,12 @@ public final class RealSystem: System {
 
     /// Runs a display change in a child process; in this process only if the binary can't be run.
     func change(_ args: [String], completion: @escaping (Bool) -> Void, inProcess: @escaping () -> Bool) {
-        guard Child.executable != nil else { completion(inProcess()); return }
-        Child.start(args, timeout: Self.changeTimeout) { completion($0 == 0) }
+        let done: (Bool) -> Void = { [weak self] ok in
+            self?.invalidatePorts()
+            completion(ok)
+        }
+        guard Child.executable != nil else { done(inProcess()); return }
+        Child.start(args, timeout: Self.changeTimeout) { done($0 == 0) }
     }
 
     public func isMirroring(_ id: CGDirectDisplayID) -> Bool { Displays.isMirroring(id) }

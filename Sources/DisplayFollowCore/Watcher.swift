@@ -46,6 +46,8 @@ public final class Watcher {
         /// After a turn-off or mirror reported as failed: don't try again before this.
         var nextChange: Date?
         var changeFailures = 0
+        /// While the monitor is silent over DDC: when to read it next.
+        var nextSilentRead = Date.distantPast
         var isAway: Bool { away != nil }
     }
     var ports: [String: PortState] = [:]
@@ -250,6 +252,9 @@ public final class Watcher {
     /// A system-sleep pause is ended by graphics being on only after graphics was seen off, or after this
     /// long (longer than powerd's will-sleep window, so a slow sleep can't end it).
     let systemPauseMinimum: TimeInterval = 60
+    /// A monitor that hasn't answered over DDC for this long is only read every `silentReadInterval`.
+    let silentAfter: TimeInterval = 10
+    let silentReadInterval: TimeInterval = 5
     let freshCheckInterval: TimeInterval = 3
     /// After a minute of pause, fresh checks slow down to this.
     let slowFreshCheckInterval: TimeInterval = 10
@@ -340,8 +345,12 @@ public final class Watcher {
         }
 
         // Hooks-only monitors and monitors that are on need no display ID; the rest can't be acted on without one.
-        let input = system.readInput(port: port)
+        // A monitor silent for a while (powered off, in standby) is read less often: each read that gets no
+        // reply blocks for a moment and sends I2C traffic to a monitor that may be trying to sleep.
+        let silent = now.timeIntervalSince(state.lastReply) > silentAfter
+        let input = !silent || now >= state.nextSilentRead ? system.readInput(port: port) : nil
         if input != nil { state.lastReply = now }
+        if silent, input == nil, now >= state.nextSilentRead { state.nextSilentRead = now.addingTimeInterval(silentReadInterval) }
 
         // Off: decide whether it has to come back on. A display found off that this run did not turn off
         // (state lost, a restart in the middle of a change, a change reported as failed that happened anyway)
