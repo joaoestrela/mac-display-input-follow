@@ -70,7 +70,7 @@ To cut a release, set the version in `Sources/DisplayFollowCore/Version.swift`, 
 
 - `interval`: seconds between DDC reads.
 - `confirmReads`: how many reads in a row must agree before acting, so one bad reading can't turn a monitor off. With the defaults, a switch takes effect in about 2 seconds.
-- `wakeGrace`: seconds to wait after the Mac or its displays wake before acting. Polling pauses while the Mac or its displays sleep, so DDC traffic can't keep a monitor awake. Displays turned off or mirrored are turned back on at wake and turned off again after `wakeGrace` if the monitor still shows another input.
+- `wakeGrace`: seconds to wait after the Mac or its displays wake before acting. Polling pauses while the Mac or its displays sleep, so DDC traffic can't keep a monitor awake. Dark wakes (the short maintenance wakes macOS does with the screens off) count as asleep. Displays turned off or mirrored are turned back on at wake and turned off again after `wakeGrace` if the monitor still shows another input.
 - `ddcLossTimeout`: seconds without a DDC reply after which a monitor that was turned off is turned back on (for example, when it was powered off). `0` disables this.
 - `macInput`: the input value the monitor reports while showing this Mac. Run `setup` again if you move the Mac to another port; it keeps the monitor's `action` and hooks.
 - `action`: what to do while the monitor shows another input.
