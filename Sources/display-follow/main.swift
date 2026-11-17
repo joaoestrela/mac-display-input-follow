@@ -24,7 +24,9 @@ let command = args.isEmpty ? "" : args.removeFirst()
 
 switch command {
 case "setup":
-    var config = (try? ConfigStore.load()) ?? Config()
+    // An invalid config is not replaced: it may hold actions and hooks that would be lost.
+    var config: Config
+    do { config = try ConfigStore.load() ?? Config() } catch { fail("invalid config at \(Paths.config.path): \(error)\nfix or remove it, then run setup again") }
     var saved = 0
     for port in Ports.external() {
         guard let identity = port.identity, port.displayID != nil else { continue }
