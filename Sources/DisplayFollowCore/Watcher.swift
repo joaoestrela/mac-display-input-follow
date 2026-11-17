@@ -52,9 +52,16 @@ public final class Watcher {
     /// Ports with a display change running (in a child process); they are left alone until it finishes.
     var inFlight: Set<String> = []
 
-    /// Set while the Mac or its displays sleep. DDC polling then could keep a monitor awake.
-    var sleeping = false
-    var pausedAt = Date.distantPast
+    /// Whether the watcher is following the monitors or paused because the Mac or its displays sleep
+    /// (DDC polling then could keep a monitor awake).
+    enum Activity: Equatable {
+        case running
+        /// System sleep or a dark wake; `sawNoGraphics` once the graphics capability was seen off.
+        case pausedForSystem(since: Date, sawNoGraphics: Bool)
+        case pausedForDisplays(since: Date)
+    }
+    var activity = Activity.running
+    var sleeping: Bool { activity != .running }
     /// Consecutive ticks that found every display asleep.
     var asleepReads = 0
     var resumeAt = Date.distantPast
@@ -156,14 +163,18 @@ public final class Watcher {
     }
 
     enum PauseReason { case system, displays }
-    var pausedFor = PauseReason.system
 
     func pause(_ reason: String, for kind: PauseReason = .system) {
-        guard !sleeping else { return }
-        sleeping = true
-        sawNoGraphics = false
-        pausedFor = kind
-        pausedAt = system.now
+        let now = system.now
+        switch (activity, kind) {
+        case (.running, .system), (.pausedForDisplays, .system):
+            // A display-sleep pause becomes a system one when the Mac goes to sleep.
+            activity = .pausedForSystem(since: now, sawNoGraphics: false)
+        case (.running, .displays):
+            activity = .pausedForDisplays(since: now)
+        default:
+            return
+        }
         log("paused (\(reason))")
     }
 
@@ -181,7 +192,8 @@ public final class Watcher {
             if ports[key]?.away == .off { ports[key]?.restoreAfterWake = true }
         }
         if sleeping { log("resuming in \(Int(config.wakeGrace))s (\(reason))") }
-        sleeping = false
+        activity = .running
+        asleepReads = 0
     }
 
     /// Pauses while every display is asleep (two reads in a row, so a display change can't trip it)
@@ -201,17 +213,26 @@ public final class Watcher {
         let graphics = system.hasGraphics()
         if graphics == false {
             pause("no graphics: asleep or dark wake")
-            sawNoGraphics = true
+            if case .pausedForSystem(let since, _) = activity { activity = .pausedForSystem(since: since, sawNoGraphics: true) }
             return false
         }
-        if sleeping, pausedFor == .system {
+        switch activity {
+        case .pausedForSystem(let since, let sawNoGraphics):
             // Right after the will-sleep notification graphics still reads on: don't resume on that.
-            guard graphics == true, sawNoGraphics || now.timeIntervalSince(pausedAt) > systemPauseMinimum else { return false }
-            asleepReads = 0
-            resume("full wake")
+            guard sawNoGraphics || now.timeIntervalSince(since) > systemPauseMinimum else { return false }
+            if graphics == true {
+                resume("full wake")
+                return true
+            }
+            // Graphics can't be read: go by the displays instead.
+            guard let fresh = freshState(pausedSince: since), fresh != .asleep else { return false }
+            resume("displays awake")
             return true
-        }
-        if !sleeping {
+        case .pausedForDisplays(let since):
+            guard let fresh = freshState(pausedSince: since), fresh != .asleep else { return false }
+            resume("displays awake")
+            return true
+        case .running:
             asleepReads = system.displayState() == .awake ? 0 : asleepReads + 1
             guard asleepReads >= 2, let fresh = freshState() else { return true }
             switch fresh {
@@ -222,25 +243,30 @@ public final class Watcher {
             case .none:
                 break  // nothing on screen: not asleep, and `reconcile` turns a display back on
             }
-        } else if let fresh = freshState() {
-            if fresh != .asleep {
-                asleepReads = 0
-                resume("displays awake")
-            }
+            return !sleeping
         }
-        return !sleeping
     }
 
+    /// A system-sleep pause is ended by graphics being on only after graphics was seen off, or after this
+    /// long (longer than powerd's will-sleep window, so a slow sleep can't end it).
+    let systemPauseMinimum: TimeInterval = 60
     let freshCheckInterval: TimeInterval = 3
+    /// After a minute of pause, fresh checks slow down to this.
+    let slowFreshCheckInterval: TimeInterval = 10
+    var nextFreshCheck = Date.distantPast
+    var loggedStaleView = false
     var lastFresh: Displays.State?
 
-    /// A fresh process's view of the displays, asked at most every `freshCheckInterval` (nil in between).
-    func freshState() -> Displays.State? {
+    /// A fresh process's view of the displays, asked at most every `freshCheckInterval` (nil in between),
+    /// less often once a pause is over a minute old. If the fresh process can't be run, the displays count
+    /// as awake: this process's own view is the one known to go stale.
+    func freshState(pausedSince: Date? = nil) -> Displays.State? {
         let now = system.now
         guard now >= nextFreshCheck else { return nil }
-        nextFreshCheck = now.addingTimeInterval(freshCheckInterval)
-        lastFresh = system.freshDisplayState()
-        return lastFresh ?? system.displayState()
+        let slow = pausedSince.map { now.timeIntervalSince($0) > 60 } ?? false
+        nextFreshCheck = now.addingTimeInterval(slow ? slowFreshCheckInterval : freshCheckInterval)
+        lastFresh = system.freshDisplayState() ?? .awake
+        return lastFresh
     }
 
     /// Nothing on screen (lid closed, the external display off): then the display this tool turned off has to
@@ -250,11 +276,6 @@ public final class Watcher {
         if let fresh = freshState() { return fresh == .none }
         return lastFresh == Displays.State.none
     }
-    /// A system-sleep pause is ended by graphics being on only after graphics was seen off, or after this long.
-    let systemPauseMinimum: TimeInterval = 30
-    var sawNoGraphics = false
-    var nextFreshCheck = Date.distantPast
-    var loggedStaleView = false
 
     func tick() {
         reloadConfigIfChanged()

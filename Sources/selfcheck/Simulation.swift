@@ -272,6 +272,55 @@ func simulationChecks() {
         run(w, fake, seconds: 4)
         check(fake.actions == ["mirror 3 onto 1", "unmirror 3"] && fake.hooks == ["away", "back"], "sim: mirror away and back")
     }
+    do {  // a sleep notification while graphics still reads on doesn't end the pause right away
+        let (w, fake) = simulation()
+        w.pause("will sleep")
+        run(w, fake, seconds: 50)
+        check(w.sleeping, "sim: graphics still on just after will-sleep keeps the pause")
+        run(w, fake, seconds: 15)
+        check(!w.sleeping, "sim: still on after a minute: resumes (missed wake)")
+    }
+    do {  // graphics unreadable: a system pause ends by the displays
+        let (w, fake) = simulation()
+        fake.graphics = nil
+        w.pause("will sleep")
+        fake.fresh = .asleep
+        run(w, fake, seconds: 90)
+        check(w.sleeping, "sim: unknown graphics and displays asleep: stays paused")
+        fake.fresh = .awake
+        run(w, fake, seconds: 12)
+        check(!w.sleeping, "sim: unknown graphics and displays awake: resumes")
+    }
+    do {  // the fresh check can't run: displays count as awake, no pause
+        let (w, fake) = simulation()
+        fake.local = .asleep
+        fake.fresh = nil
+        run(w, fake, seconds: 10)
+        check(!w.sleeping, "sim: fresh check unavailable does not pause")
+    }
+    do {  // after resuming, one asleep reading doesn't pause again
+        let (w, fake) = simulation()
+        fake.local = .asleep
+        fake.fresh = .asleep
+        run(w, fake, seconds: 4)
+        w.resume("did wake")
+        fake.local = .awake
+        fake.fresh = .awake
+        run(w, fake, seconds: 1)
+        fake.local = .asleep
+        fake.fresh = .asleep
+        run(w, fake, seconds: 1)
+        check(!w.sleeping, "sim: resume resets the asleep debounce")
+    }
+    do {  // display sleep, then the Mac sleeps: the pause becomes a system one
+        let (w, fake) = simulation()
+        fake.local = .asleep
+        fake.fresh = .asleep
+        run(w, fake, seconds: 4)
+        fake.graphics = false
+        run(w, fake, seconds: 2)
+        if case .pausedForSystem = w.activity {} else { check(false, "sim: display pause upgraded to system") }
+    }
     do {  // stop: entries that could not be restored stay in the state file
         let state = RuntimeState(off: ["dispext1": 3, "dispext2": 4])
         let left = StateStore.restore(state, enable: { $0 == 4 }, unmirror: { _ in true })
