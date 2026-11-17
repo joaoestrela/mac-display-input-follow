@@ -98,5 +98,14 @@ check(Ports.portName(inFramebufferPath: "IOService:/x/dispext10@1/IOMobileFrameb
 
 simulationChecks()
 
+// Single instance: a second lock in the same state folder fails.
+let lockDir = FileManager.default.temporaryDirectory.appendingPathComponent("display-follow-selfcheck-\(getpid())")
+setenv("XDG_STATE_HOME", lockDir.path, 1)
+check(SingleInstance.acquire(), "first watcher gets the lock")
+let second = open(SingleInstance.url.path, O_RDWR)
+check(flock(second, LOCK_EX | LOCK_NB) != 0, "second watcher does not")
+close(second)
+unsetenv("XDG_STATE_HOME")
+
 if failures > 0 { print("\(failures) check(s) failed"); exit(1) }
 print("all checks passed")

@@ -64,7 +64,13 @@ case "status":
         print("\(name) [\(port.port)]: \(mac); \(state); \(showing)")
     }
 case "run":
-    Watcher(dryRun: args.contains("--dry-run")).run()
+    let dryRun = args.contains("--dry-run")
+    guard dryRun || SingleInstance.acquire() else {
+        // Exit 0: launchd only restarts the watcher after a failure, so this one stays stopped.
+        log("another display-follow watcher is running (lock \(SingleInstance.url.path)); exiting")
+        exit(0)
+    }
+    Watcher(dryRun: dryRun).run()
 case "list":
     let portByDisplay = Dictionary(Ports.external().compactMap { p in p.displayID.map { ($0, p.port) } },
                                    uniquingKeysWith: { first, _ in first })
