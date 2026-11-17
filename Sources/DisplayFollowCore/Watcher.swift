@@ -117,6 +117,8 @@ public final class Watcher {
             self?.pause(note.name.rawValue)
         }
         center.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] note in
+            // A wake without graphics is a dark wake; the tick resumes once the screens are on.
+            guard Power.hasGraphics() != false else { return }
             self?.resume(note.name.rawValue)
         }
     }
@@ -127,6 +129,7 @@ public final class Watcher {
     func pause(_ reason: String, for kind: PauseReason = .system) {
         guard !sleeping else { return }
         sleeping = true
+        sawNoGraphics = false
         pausedFor = kind
         pausedAt = Date()
         log("paused (\(reason))")
@@ -146,9 +149,6 @@ public final class Watcher {
         sleeping = false
     }
 
-    /// Timers don't fire while the Mac sleeps, so a tick that finds a display awake this long after a
-    /// system-sleep pause means the wake notification was missed: resume anyway.
-    let missedWakeAfter: TimeInterval = 10
     let missingRetryInterval: TimeInterval = 15
 
     /// Pauses while every display is asleep (two reads in a row, so a display change can't trip it)
@@ -158,8 +158,26 @@ public final class Watcher {
     /// still read asleep an hour after they woke, so the watcher never resumed). It is only a cheap first
     /// check; pausing and resuming go by a fresh process (`display-follow displays-awake`), asked at
     /// most every `freshCheckInterval`.
+    ///
+    /// System sleep goes by the kernel's graphics capability: off while asleep and in a dark wake
+    /// (maintenance wakes with the screens off, during which timers do fire), on after a full wake.
+    /// A system-sleep pause ends only when it is back, so a dark wake never resumes the watcher or
+    /// tries to turn displays on, and a full wake resumes it even without the wake notification.
     func followDisplaySleep() -> Bool {
         let now = Date()
+        let graphics = Power.hasGraphics()
+        if graphics == false {
+            pause("no graphics: asleep or dark wake")
+            sawNoGraphics = true
+            return false
+        }
+        if sleeping, pausedFor == .system {
+            // Right after the will-sleep notification graphics still reads on: don't resume on that.
+            guard graphics == true, sawNoGraphics || now.timeIntervalSince(pausedAt) > systemPauseMinimum else { return false }
+            asleepReads = 0
+            resume("full wake")
+            return true
+        }
         if !sleeping {
             asleepReads = Displays.anyAwake() ? 0 : asleepReads + 1
             guard asleepReads >= 2, now >= nextFreshCheck else { return true }
@@ -169,17 +187,20 @@ public final class Watcher {
             } else {
                 pause("displays asleep", for: .displays)
             }
-        } else if pausedFor == .displays || now.timeIntervalSince(pausedAt) > missedWakeAfter, now >= nextFreshCheck {
+        } else if now >= nextFreshCheck {
             nextFreshCheck = now.addingTimeInterval(freshCheckInterval)
             if freshAnyAwake() ?? Displays.anyAwake() {
                 asleepReads = 0
-                resume(pausedFor == .displays ? "displays awake" : "displays awake without a wake notification")
+                resume("displays awake")
             }
         }
         return !sleeping
     }
 
     let freshCheckInterval: TimeInterval = 3
+    /// A system-sleep pause is ended by graphics being on only after graphics was seen off, or after this long.
+    let systemPauseMinimum: TimeInterval = 30
+    var sawNoGraphics = false
     var nextFreshCheck = Date.distantPast
     var loggedStaleView = false
 
