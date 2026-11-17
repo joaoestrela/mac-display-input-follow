@@ -43,9 +43,14 @@ public final class Watcher {
         var restore: Restore?
         /// Turn the display back on regardless of input: set at wake (see `resume`).
         var restoreAfterWake = false
+        /// After a turn-off or mirror reported as failed: don't try again before this.
+        var nextChange: Date?
+        var changeFailures = 0
         var isAway: Bool { away != nil }
     }
     var ports: [String: PortState] = [:]
+    /// Ports with a display change running (in a child process); they are left alone until it finishes.
+    var inFlight: Set<String> = []
 
     /// Set while the Mac or its displays sleep. DDC polling then could keep a monitor awake.
     var sleeping = false
@@ -275,10 +280,8 @@ public final class Watcher {
                 continue
             }
             // Turn it on and forget it only once that works: a display left off and forgotten stays off.
-            if restoreDisplay(&state, port: port, reason: "disconnected while off") {
-                if state.hooksAway { forgetHooks(&state, port: port) }
-                continue
-            }
+            // (Once on, `away` is cleared and the next tick forgets it above.)
+            restoreDisplay(&state, port: port, reason: "disconnected while off")
             seen[port] = state
         }
 
@@ -286,7 +289,7 @@ public final class Watcher {
             var state = ports[snap.port] ?? PortState(lastReply: system.now)
             if let identity = snap.identity { state.identity = identity }
             if let id = snap.displayID { state.displayID = id }
-            reconcile(&state, snap: snap, active: &active)
+            if !inFlight.contains(snap.port) { reconcile(&state, snap: snap, active: &active) }
             seen[snap.port] = state
         }
         ports = seen
@@ -309,8 +312,8 @@ public final class Watcher {
 
         guard let identity = state.identity, let monitor = config.monitor(identity) else {
             // Not (or no longer) in the config: put back whatever was done to it.
-            if !online, state.away == .off, restoreDisplay(&state, port: port, reason: "not in the config") { active += 1 }
-            if state.away == .mirrored, let id = state.displayID { unmirror(&state, id: id) }
+            if !online, state.away == .off { restoreDisplay(&state, port: port, reason: "not in the config") }
+            if state.away == .mirrored, let id = state.displayID { unmirror(&state, port: port, id: id) }
             if state.away == .hooksOnly { state.away = nil }
             return
         }
@@ -335,7 +338,7 @@ public final class Watcher {
             } else if nothingOnScreen() { reason = "no other display is on" }
             else { reason = nil }
             if let reason {
-                if restoreDisplay(&state, port: port, reason: reason) { active += 1 }
+                restoreDisplay(&state, port: port, reason: reason)
             } else {
                 state.restore = nil
             }
@@ -346,10 +349,11 @@ public final class Watcher {
         if state.away == .mirrored || state.away == .hooksOnly,
            Policy.ddcLost(lastReply: state.lastReply, now: now, timeout: config.ddcLossTimeout) {
             log("\(name) silent over DDC for \(Int(config.ddcLossTimeout))s -> restoring it")
-            if state.away == .mirrored, let id = state.displayID { unmirror(&state, id: id) } else { state.away = nil }
+            if state.away == .mirrored, let id = state.displayID { unmirror(&state, port: port, id: id) } else { state.away = nil }
             return
         }
 
+        if let next = state.nextChange, now < next { return }
         var decision = Policy.decide(input: input, macInput: monitor.macInput, isAway: state.isAway,
                                      activeDisplays: active, needsOtherDisplay: monitor.action != .none)
         if case .away(let other) = decision, Policy.settling(turnedOnAt: state.turnedOnAt, now: now) {
@@ -372,17 +376,18 @@ public final class Watcher {
                 state.away = .off
                 ports[port] = state
                 saveState()
-                guard dryRun || system.setEnabled(id, false) else {
-                    log("could not disable display \(id)")
-                    state.away = nil
-                    return
-                }
                 active -= 1
+                change(port: port, what: "disable display \(id)", { self.system.setEnabled(id, false, completion: $0) }) { state, ok in
+                    // If it went off anyway, the next tick sees it off and follows it.
+                    if !ok { state.away = nil }
+                }
             case .mirror:
                 guard let id = snap.displayID, let target = system.mirrorTarget(for: id) else { return }
                 log("\(label) -> mirroring display \(id) onto \(target)")
-                guard dryRun || system.setMirror(id, of: target) else { log("could not mirror display \(id)"); return }
                 state.away = .mirrored
+                change(port: port, what: "mirror display \(id)", { self.system.setMirror(id, of: target, completion: $0) }) { state, ok in
+                    if !ok { state.away = nil }
+                }
             case .none:
                 log(label)
                 state.away = .hooksOnly
@@ -393,45 +398,84 @@ public final class Watcher {
             }
         case .back(let input):
             log("\(name) back on input \(input)")
-            if state.away == .mirrored, let id = state.displayID { unmirror(&state, id: id) } else { state.away = nil }
+            if state.away == .mirrored, let id = state.displayID { unmirror(&state, port: port, id: id) } else { state.away = nil }
         }
         if !state.isAway, let input { runBackHookIfDue(&state, monitor: monitor, port: port, input: input) }
     }
 
-    /// Tries to turn the port's display back on, at most as often as the backoff allows, never giving up.
-    /// Returns true once it is on.
-    func restoreDisplay(_ state: inout PortState, port: String, reason: String) -> Bool {
-        guard let id = state.displayID else { return false }
+    /// Turns the port's display back on, at most as often as the backoff allows, never giving up. The
+    /// change completes later; `away` is cleared once it reports success or the display is seen on.
+    func restoreDisplay(_ state: inout PortState, port: String, reason: String) {
+        guard let id = state.displayID, !inFlight.contains(port) else { return }
         let now = system.now
-        let name = "\(state.identity?.name ?? "display") [\(port)]"
         if state.restore == nil {
             state.restore = Restore(reason: reason, next: now)
-            log("\(name) \(reason) -> enabling display \(id)")
+            log("\(state.identity?.name ?? "display") [\(port)] \(reason) -> enabling display \(id)")
         }
-        guard var restore = state.restore, now >= restore.next else { return false }
-        if dryRun || system.setEnabled(id, true) {
-            if restore.attempts > 0 { log("display \(id) [\(port)] back on after \(restore.attempts + 1) attempts") }
-            state.away = nil
-            state.restore = nil
-            state.restoreAfterWake = false
-            state.turnedOnAt = now
-            state.settleLogged = false
-            return true
-        }
-        restore.attempts += 1
-        let wait = Policy.restoreBackoff(attempts: restore.attempts)
-        restore.next = now.addingTimeInterval(wait)
-        state.restore = restore
-        if restore.attempts == 1 || restore.attempts % 10 == 0 {
-            log("could not enable display \(id) [\(port)] (attempt \(restore.attempts)); retrying in \(Int(wait))s")
-        }
-        return false
+        guard let restore = state.restore, now >= restore.next else { return }
+        guard !dryRun else { markOn(&state); return }
+        inFlight.insert(port)
+        system.setEnabled(id, true) { [weak self] ok in self?.restoreFinished(port: port, id: id, ok: ok) }
     }
 
-    func unmirror(_ state: inout PortState, id: CGDirectDisplayID) {
-        log("stopping mirroring of display \(id)")
-        guard dryRun || system.setMirror(id, of: nil) else { log("could not stop mirroring display \(id)"); return }
+    func restoreFinished(port: String, id: CGDirectDisplayID, ok: Bool) {
+        inFlight.remove(port)
+        guard var state = ports[port], var restore = state.restore else { return }
+        if ok {
+            if restore.attempts > 0 { log("display \(id) [\(port)] back on after \(restore.attempts + 1) attempts") }
+            markOn(&state)
+        } else {
+            restore.attempts += 1
+            let wait = Policy.restoreBackoff(attempts: restore.attempts)
+            restore.next = system.now.addingTimeInterval(wait)
+            state.restore = restore
+            if restore.attempts == 1 || restore.attempts % 10 == 0 {
+                log("could not enable display \(id) [\(port)] (attempt \(restore.attempts)); retrying in \(Int(wait))s")
+            }
+        }
+        ports[port] = state
+        saveState()
+    }
+
+    func markOn(_ state: inout PortState) {
         state.away = nil
+        state.restore = nil
+        state.restoreAfterWake = false
+        state.turnedOnAt = system.now
+        state.settleLogged = false
+    }
+
+    /// Starts a turn-off, mirror or unmirror; `finish` adjusts the port's state when it completes. A failure
+    /// holds off further changes to that port with the same backoff as turning on.
+    func change(port: String, what: String, _ start: (@escaping (Bool) -> Void) -> Void,
+                finish: @escaping (inout PortState, Bool) -> Void) {
+        guard !dryRun else { return }
+        inFlight.insert(port)
+        start { [weak self] ok in
+            guard let self else { return }
+            self.inFlight.remove(port)
+            guard var state = self.ports[port] else { return }
+            finish(&state, ok)
+            if ok {
+                state.nextChange = nil
+                state.changeFailures = 0
+            } else {
+                state.changeFailures += 1
+                let wait = Policy.restoreBackoff(attempts: state.changeFailures)
+                state.nextChange = self.system.now.addingTimeInterval(wait)
+                log("could not \(what) [\(port)]; next try in \(Int(wait))s at the earliest")
+            }
+            self.ports[port] = state
+            self.saveState()
+        }
+    }
+
+    func unmirror(_ state: inout PortState, port: String, id: CGDirectDisplayID) {
+        log("stopping mirroring of display \(id)")
+        guard !dryRun else { state.away = nil; return }
+        change(port: port, what: "stop mirroring display \(id)", { self.system.setMirror(id, of: nil, completion: $0) }) { state, ok in
+            if ok { state.away = nil }
+        }
     }
 
     func hook(_ command: String?, event: String, monitor: String, port: String, input: Int?) {

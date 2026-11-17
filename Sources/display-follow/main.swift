@@ -84,6 +84,11 @@ case "restore":
 case "on", "off":
     guard let id = args.first.flatMap(UInt32.init) else { fail("need a display id (see `display-follow list`)", code: 2) }
     guard Displays.setEnabled(id, command == "on") else { fail("could not turn display \(id) \(command)") }
+case "mirror", "unmirror":
+    // Used by the watcher, which makes display changes in a child process.
+    let ids = args.compactMap(UInt32.init)
+    guard let id = ids.first, command == "unmirror" || ids.count == 2 else { fail("usage: mirror <id> <target> | unmirror <id>", code: 2) }
+    guard Displays.setMirror(id, of: command == "mirror" ? ids[1] : nil) else { fail("could not \(command) display \(id)") }
 case "display-state":
     // Used by the watcher: a fresh process sees the current display state, a long-running one may not.
     exit(Displays.state().rawValue)

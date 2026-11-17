@@ -44,21 +44,31 @@ final class FakeSystem: System {
     func freshDisplayState() -> Displays.State? { fresh }
     func hasGraphics() -> Bool? { graphics }
 
-    func setEnabled(_ id: CGDirectDisplayID, _ enabled: Bool) -> Bool {
-        actions.append("\(enabled ? "on" : "off") \(id)")
-        if !enabled { stateAtLastDisable = state }
-        if enabled, failEnables > 0 { failEnables -= 1; return false }
-        if !enabled, failDisables > 0 { failDisables -= 1; return false }
-        guard let key = monitors.first(where: { $0.value.displayID == id })?.key else { return false }
-        monitors[key]?.online = enabled
-        return true
+    /// Completions of display changes, delivered after the tick that started them (like a child process).
+    var pending: [() -> Void] = []
+
+    func flush() {
+        let now = pending
+        pending = []
+        now.forEach { $0() }
     }
 
-    func setMirror(_ id: CGDirectDisplayID, of target: CGDirectDisplayID?) -> Bool {
+    func setEnabled(_ id: CGDirectDisplayID, _ enabled: Bool, completion: @escaping (Bool) -> Void) {
+        actions.append("\(enabled ? "on" : "off") \(id)")
+        if !enabled { stateAtLastDisable = state }
+        let ok: Bool
+        if enabled, failEnables > 0 { failEnables -= 1; ok = false }
+        else if !enabled, failDisables > 0 { failDisables -= 1; ok = false }
+        else if let key = monitors.first(where: { $0.value.displayID == id })?.key { monitors[key]?.online = enabled; ok = true }
+        else { ok = false }
+        pending.append { completion(ok) }
+    }
+
+    func setMirror(_ id: CGDirectDisplayID, of target: CGDirectDisplayID?, completion: @escaping (Bool) -> Void) {
         actions.append(target.map { "mirror \(id) onto \($0)" } ?? "unmirror \(id)")
-        guard let key = monitors.first(where: { $0.value.displayID == id })?.key else { return false }
-        monitors[key]?.mirroredOnto = target
-        return true
+        let key = monitors.first(where: { $0.value.displayID == id })?.key
+        if let key { monitors[key]?.mirroredOnto = target }
+        pending.append { completion(key != nil) }
     }
 
     func isMirroring(_ id: CGDirectDisplayID) -> Bool { monitors.values.first { $0.displayID == id }?.mirroredOnto != nil }
@@ -93,6 +103,7 @@ func run(_ watcher: Watcher, _ fake: FakeSystem, seconds: Int) {
     for _ in 0..<seconds {
         fake.now = fake.now.addingTimeInterval(1)
         watcher.tick()
+        fake.flush()
     }
 }
 
@@ -244,6 +255,22 @@ func simulationChecks() {
         fake.fresh = .awake
         run(w, fake, seconds: 4)
         check(!w.sleeping, "sim: displays awake resumes")
+    }
+    do {  // a turn-off that keeps failing backs off instead of retrying every other second
+        let (w, fake) = simulation()
+        fake.failDisables = 1000
+        fake.display.input = 15
+        run(w, fake, seconds: 120)
+        let tries = fake.actions.filter { $0 == "off 3" }.count
+        check(tries >= 4 && tries <= 8, "sim: failing disable backs off (\(tries) tries in 2 minutes)")
+    }
+    do {  // mirroring away and back, with hooks
+        let (w, fake) = simulation(action: .mirror, hooks: true)
+        fake.display.input = 15
+        run(w, fake, seconds: 3)
+        fake.display.input = 17
+        run(w, fake, seconds: 4)
+        check(fake.actions == ["mirror 3 onto 1", "unmirror 3"] && fake.hooks == ["away", "back"], "sim: mirror away and back")
     }
     do {  // stop: entries that could not be restored stay in the state file
         let state = RuntimeState(off: ["dispext1": 3, "dispext2": 4])

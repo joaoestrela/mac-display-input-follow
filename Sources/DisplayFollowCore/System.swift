@@ -26,8 +26,9 @@ public protocol System: AnyObject {
     func freshDisplayState() -> Displays.State?
     /// The kernel's graphics capability: false while asleep or in a dark wake, nil if unreadable.
     func hasGraphics() -> Bool?
-    func setEnabled(_ id: CGDirectDisplayID, _ enabled: Bool) -> Bool
-    func setMirror(_ id: CGDirectDisplayID, of target: CGDirectDisplayID?) -> Bool
+    /// Display changes complete later, on the main queue, with whether they reported success.
+    func setEnabled(_ id: CGDirectDisplayID, _ enabled: Bool, completion: @escaping (Bool) -> Void)
+    func setMirror(_ id: CGDirectDisplayID, of target: CGDirectDisplayID?, completion: @escaping (Bool) -> Void)
     func isMirroring(_ id: CGDirectDisplayID) -> Bool
     func mirrorTarget(for id: CGDirectDisplayID) -> CGDirectDisplayID?
     func runHook(_ command: String?, event: String, monitor: String, port: String, input: Int?)
@@ -54,20 +55,28 @@ public final class RealSystem: System {
     public func displayState() -> Displays.State { Displays.state() }
 
     public func freshDisplayState() -> Displays.State? {
-        guard let exe = Bundle.main.executableURL else { return nil }
-        let process = Process()
-        process.executableURL = exe
-        process.arguments = ["display-state"]
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
-        do { try process.run() } catch { return nil }
-        process.waitUntilExit()
-        return Displays.State(rawValue: process.terminationStatus)
+        Child.run(["display-state"], timeout: 5).flatMap(Displays.State.init(rawValue:))
     }
 
     public func hasGraphics() -> Bool? { Power.hasGraphics() }
-    public func setEnabled(_ id: CGDirectDisplayID, _ enabled: Bool) -> Bool { Displays.setEnabled(id, enabled) }
-    public func setMirror(_ id: CGDirectDisplayID, of target: CGDirectDisplayID?) -> Bool { Displays.setMirror(id, of: target) }
+    /// How long a display change may take before its child process is killed and it counts as failed.
+    static let changeTimeout: TimeInterval = 15
+
+    public func setEnabled(_ id: CGDirectDisplayID, _ enabled: Bool, completion: @escaping (Bool) -> Void) {
+        change([enabled ? "on" : "off", String(id)], completion: completion) { Displays.setEnabled(id, enabled) }
+    }
+
+    public func setMirror(_ id: CGDirectDisplayID, of target: CGDirectDisplayID?, completion: @escaping (Bool) -> Void) {
+        let args = target.map { ["mirror", String(id), String($0)] } ?? ["unmirror", String(id)]
+        change(args, completion: completion) { Displays.setMirror(id, of: target) }
+    }
+
+    /// Runs a display change in a child process; in this process only if the binary can't be run.
+    func change(_ args: [String], completion: @escaping (Bool) -> Void, inProcess: @escaping () -> Bool) {
+        guard Child.executable != nil else { completion(inProcess()); return }
+        Child.start(args, timeout: Self.changeTimeout) { completion($0 == 0) }
+    }
+
     public func isMirroring(_ id: CGDirectDisplayID) -> Bool { Displays.isMirroring(id) }
     public func mirrorTarget(for id: CGDirectDisplayID) -> CGDirectDisplayID? { Displays.mirrorTarget(for: id) }
 
