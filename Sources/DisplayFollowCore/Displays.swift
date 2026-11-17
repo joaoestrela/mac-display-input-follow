@@ -31,8 +31,22 @@ public enum Displays {
 
     public static func activeCount() -> Int { online().filter(\.active).count }
 
-    /// True if any active display is awake. Used to notice a wake whose notification never came.
-    public static func anyAwake() -> Bool { online().contains { $0.active && CGDisplayIsAsleep($0.id) == 0 } }
+    /// Whether anything is on screen. The exit status of `display-follow display-state`.
+    public enum State: Int32 {
+        /// An active display is awake.
+        case awake = 0
+        /// Displays are there but asleep.
+        case asleep = 1
+        /// Nothing is on: no display is active or asleep (e.g. lid closed and the external display off).
+        case none = 2
+    }
+
+    public static func state() -> State {
+        let displays = online()
+        if displays.contains(where: { $0.active && CGDisplayIsAsleep($0.id) == 0 }) { return .awake }
+        if displays.contains(where: { CGDisplayIsAsleep($0.id) != 0 }) { return .asleep }
+        return .none
+    }
 
     /// Turns a display on or off in software, as if it were plugged in or unplugged.
     @discardableResult

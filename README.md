@@ -70,7 +70,7 @@ To cut a release, set the version in `Sources/DisplayFollowCore/Version.swift`, 
 
 - `interval`: seconds between DDC reads.
 - `confirmReads`: how many reads in a row must agree before acting, so one bad reading can't turn a monitor off. With the defaults, a switch takes effect in about 2 seconds.
-- `wakeGrace`: seconds to wait after the Mac or its displays wake before acting. Polling pauses while the Mac or its displays sleep, so DDC traffic can't keep a monitor awake. Dark wakes (the short maintenance wakes macOS does with the screens off) count as asleep. Displays turned off or mirrored are turned back on at wake and turned off again after `wakeGrace` if the monitor still shows another input.
+- `wakeGrace`: seconds to wait after the Mac or its displays wake before acting. Polling pauses while the Mac or its displays sleep, so DDC traffic can't keep a monitor awake. Dark wakes (the short maintenance wakes macOS does with the screens off) count as asleep. Displays turned off are turned back on once `wakeGrace` is over, and turned off again if the monitor still shows another input once the 15-second settle window after turning on has passed (see Caveats).
 - `ddcLossTimeout`: seconds without a DDC reply after which a monitor that was turned off is turned back on (for example, when it was powered off). `0` disables this.
 - `macInput`: the input value the monitor reports while showing this Mac. Run `setup` again if you move the Mac to another port; it keeps the monitor's `action` and hooks.
 - `action`: what to do while the monitor shows another input.
@@ -83,14 +83,19 @@ The watcher reloads the file when it changes; no restart needed. `display-follow
 
 ## Safety
 
-A display turned off in software isn't listed by macOS any more, so `display-follow` records each display it turns off or mirrors in `~/.local/state/display-follow/state.json` (or `$XDG_STATE_HOME`) and undoes that when:
+A display turned off in software isn't listed by macOS any more, so `display-follow` records each display it turns off or mirrors, and the last display ID seen on each port, in `~/.local/state/display-follow/state.json` (or `$XDG_STATE_HOME`). The record is written before a display is turned off.
 
-- the watcher stops (`make stop`, `make uninstall`, logout, Ctrl-C);
-- the Mac or its displays wake, in case the other source went away during sleep (a display turned off sends no signal, so a monitor left on an empty input would never find its way back);
+Every second the watcher compares what it sees with what should be. A display that is off is turned back on when:
+
+- its monitor shows the Mac's input;
+- the Mac or its displays wake (once `wakeGrace` is over), in case the other source went away during sleep: a display turned off sends no signal, so a monitor left on an empty input would never find its way back;
 - the monitor stops answering over DDC for `ddcLossTimeout` seconds;
-- you run `display-follow restore`.
+- nothing else is on screen (for example, the lid is closed);
+- its monitor is removed from the config, or disappears (unplugged, or its link dropping out in standby).
 
-A monitor that disappears while off (unplugged, or its link dropping out in standby) is turned back on and then forgotten. If macOS refuses, the watcher keeps it in the state file and retries every 15 seconds until it works or the monitor comes back. After a crash, the restarted watcher picks up the state file and keeps following those displays.
+This doesn't depend on how the display got there: a display found off on a port the watcher knows is followed the same way, even after a crash or when macOS reported a change as failed that happened anyway. If macOS refuses to turn a display on, the watcher retries, quickly at first and then once a minute, until it works; it never gives up.
+
+When the watcher stops (`make stop`, `make uninstall`, logout, Ctrl-C) or you run `display-follow restore`, it turns back on every display it turned off. Displays that can't be turned on stay in the state file for the next run.
 
 ## Commands
 

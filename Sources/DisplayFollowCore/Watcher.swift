@@ -2,6 +2,12 @@ import AppKit
 import CoreGraphics
 import Foundation
 
+/// Follows each external monitor's input and turns its display off, mirrors it or runs hooks.
+///
+/// Each tick reconciles every port from what is observed rather than from what was attempted: a display
+/// that is off while its monitor shows the Mac (or after a wake, or with nothing else on screen) is turned
+/// back on, retrying with backoff until it is, whatever got it there. The last display ID seen on each port
+/// is kept on disk so this works after a restart too.
 public final class Watcher {
     let system: System
     let configURL: URL
@@ -11,35 +17,42 @@ public final class Watcher {
     var config = Config()
     var configDate: Date?
     var timer: Timer?
+
     /// How a monitor was handled when it switched away.
     enum AwayMode { case off, mirrored, hooksOnly }
 
-    /// Per-port memory. A disabled display is no longer listed, so its ID (and identity) is remembered.
+    /// A display being turned back on: why, and when to try next.
+    struct Restore {
+        var reason: String
+        var attempts = 0
+        var next: Date
+    }
+
     struct PortState {
-        var displayID: CGDirectDisplayID?
         var identity: MonitorIdentity?
+        /// The last display ID seen on this port. A display that is off is not listed, so it is remembered.
+        var displayID: CGDirectDisplayID?
         var away: AwayMode?
         var confirmer = Confirmer()
-        var lastReply = Date.distantPast
-        /// `onAway` ran and `onBack` has not yet. Survives the display being turned back on at wake.
+        var lastReply: Date
+        /// `onAway` ran and `onBack` has not yet.
         var hooksAway = false
-        /// Set while the port is missing and the display is still off: when to try turning it on next.
-        var nextRestoreTry: Date?
         /// When this tool last turned the display back on; see `Policy.settling`.
         var turnedOnAt: Date?
         var settleLogged = false
+        var restore: Restore?
+        /// Turn the display back on regardless of input: set at wake (see `resume`).
+        var restoreAfterWake = false
         var isAway: Bool { away != nil }
     }
     var ports: [String: PortState] = [:]
+
     /// Set while the Mac or its displays sleep. DDC polling then could keep a monitor awake.
     var sleeping = false
     var pausedAt = Date.distantPast
     /// Consecutive ticks that found every display asleep.
     var asleepReads = 0
     var resumeAt = Date.distantPast
-    /// Ports whose display could not be turned back on at wake yet (macOS can refuse right after waking).
-    var wakeRestorePending: [String: Int] = [:]
-    let wakeRestoreAttempts = 30
     var signalSources: [DispatchSourceSignal] = []
 
     public init(system: System = RealSystem(), configURL: URL = Paths.config, config: Config? = nil, dryRun: Bool = false) {
@@ -48,11 +61,11 @@ public final class Watcher {
         self.fixedConfig = config != nil
         self.config = config ?? Config()
         self.dryRun = dryRun
+        if !dryRun { adoptState() }
     }
 
     public func run() -> Never {
         log("started (config \(configURL.path)\(dryRun ? ", dry run" : ""))")
-        if !dryRun { adoptState() }
         handleSignals()
         reloadConfigIfChanged()
         observeSleep()
@@ -81,23 +94,30 @@ public final class Watcher {
         timer = Timer.scheduledTimer(withTimeInterval: max(config.interval, 0.2), repeats: true) { [weak self] _ in self?.tick() }
     }
 
-    /// Picks up displays a previous run turned off, so they are still followed (and turned back on).
+    /// Picks up what a previous run did, so those displays are still followed (and turned back on).
     func adoptState() {
         let state = system.loadState()
+        let now = system.now
+        for (port, id) in state.known { ports[port] = PortState(displayID: id, lastReply: now) }
         for (port, id) in state.off {
-            ports[port] = PortState(displayID: id, away: .off, lastReply: system.now, hooksAway: true)
+            ports[port, default: PortState(lastReply: now)].displayID = id
+            ports[port]?.away = .off
             log("display \(id) [\(port)] was turned off by a previous run")
         }
         for (port, id) in state.mirrored {
-            ports[port] = PortState(displayID: id, away: .mirrored, lastReply: system.now, hooksAway: true)
+            ports[port, default: PortState(lastReply: now)].displayID = id
+            ports[port]?.away = .mirrored
             log("display \(id) [\(port)] was mirrored by a previous run")
         }
+        for port in state.hooksAway { ports[port, default: PortState(lastReply: now)].hooksAway = true }
     }
 
     func saveState() {
         guard !dryRun else { return }
         system.saveState(RuntimeState(off: ports.compactMapValues { $0.away == .off ? $0.displayID : nil },
-                                     mirrored: ports.compactMapValues { $0.away == .mirrored ? $0.displayID : nil }))
+                                      mirrored: ports.compactMapValues { $0.away == .mirrored ? $0.displayID : nil },
+                                      known: ports.compactMapValues(\.displayID),
+                                      hooksAway: ports.filter(\.value.hooksAway).map(\.key).sorted()))
     }
 
     /// On stop (launchctl bootout, Ctrl-C, logout) turn back on every display this tool turned off.
@@ -142,21 +162,22 @@ public final class Watcher {
         log("paused (\(reason))")
     }
 
+    /// While asleep the other source may have gone away (or the monitor been powered off and on). A monitor
+    /// left on an input with no signal never comes back to the Mac by itself, because a display turned off
+    /// sends no signal for its auto input-select to find. So every display turned off is turned back on once
+    /// `wakeGrace` is over; the watcher turns it off again if the other input is still in use. Mirrored
+    /// displays still send a signal and are left alone.
     func resume(_ reason: String) {
         resumeAt = system.now.addingTimeInterval(config.wakeGrace)
         for key in ports.keys {
             ports[key]?.confirmer = Confirmer()
             // Time asleep is not DDC silence.
             ports[key]?.lastReply = resumeAt
+            if ports[key]?.away == .off { ports[key]?.restoreAfterWake = true }
         }
-        if sleeping {
-            log("resuming in \(Int(config.wakeGrace))s (\(reason))")
-            restoreForWake()
-        }
+        if sleeping { log("resuming in \(Int(config.wakeGrace))s (\(reason))") }
         sleeping = false
     }
-
-    let missingRetryInterval: TimeInterval = 15
 
     /// Pauses while every display is asleep (two reads in a row, so a display change can't trip it)
     /// and resumes when one wakes. Returns false while paused.
@@ -186,17 +207,18 @@ public final class Watcher {
             return true
         }
         if !sleeping {
-            asleepReads = system.anyDisplayAwake() ? 0 : asleepReads + 1
-            guard asleepReads >= 2, now >= nextFreshCheck else { return true }
-            nextFreshCheck = now.addingTimeInterval(freshCheckInterval)
-            if system.freshAnyAwake() ?? false {
+            asleepReads = system.displayState() == .awake ? 0 : asleepReads + 1
+            guard asleepReads >= 2, let fresh = freshState() else { return true }
+            switch fresh {
+            case .awake:
                 if !loggedStaleView { log("displays read asleep here but awake in a fresh process; not pausing"); loggedStaleView = true }
-            } else {
+            case .asleep:
                 pause("displays asleep", for: .displays)
+            case .none:
+                break  // nothing on screen: not asleep, and `reconcile` turns a display back on
             }
-        } else if now >= nextFreshCheck {
-            nextFreshCheck = now.addingTimeInterval(freshCheckInterval)
-            if system.freshAnyAwake() ?? system.anyDisplayAwake() {
+        } else if let fresh = freshState() {
+            if fresh != .asleep {
                 asleepReads = 0
                 resume("displays awake")
             }
@@ -205,203 +227,231 @@ public final class Watcher {
     }
 
     let freshCheckInterval: TimeInterval = 3
+    var lastFresh: Displays.State?
+
+    /// A fresh process's view of the displays, asked at most every `freshCheckInterval` (nil in between).
+    func freshState() -> Displays.State? {
+        let now = system.now
+        guard now >= nextFreshCheck else { return nil }
+        nextFreshCheck = now.addingTimeInterval(freshCheckInterval)
+        lastFresh = system.freshDisplayState()
+        return lastFresh ?? system.displayState()
+    }
+
+    /// Nothing on screen (lid closed, the external display off): then the display this tool turned off has to
+    /// come back, whatever the monitor shows. Checked locally first, then confirmed by a fresh process.
+    func nothingOnScreen() -> Bool {
+        guard system.activeDisplayCount() == 0 else { return false }
+        if let fresh = freshState() { return fresh == .none }
+        return lastFresh == Displays.State.none
+    }
     /// A system-sleep pause is ended by graphics being on only after graphics was seen off, or after this long.
     let systemPauseMinimum: TimeInterval = 30
     var sawNoGraphics = false
     var nextFreshCheck = Date.distantPast
     var loggedStaleView = false
 
-    /// While asleep the other source may have gone away (or the monitor been powered off and on).
-    /// A monitor left on an input with no signal never comes back to the Mac by itself, because a
-    /// display turned off sends no signal for its auto input-select to find. So turn every display
-    /// back on at wake; after `wakeGrace` the watcher turns it off again if the other input is still in use.
-    func restoreForWake() {
-        wakeRestorePending = [:]
-        for key in ports.keys where ports[key]?.away == .off || ports[key]?.away == .mirrored {
-            log("\(ports[key]?.identity?.name ?? "display") [\(key)] turning back on after wake")
-            wakeRestorePending[key] = 0
-        }
-        retryWakeRestore()
-    }
-
-    /// Runs every tick, also during `wakeGrace`, until each display is back on or the attempts run out.
-    func retryWakeRestore() {
-        guard !wakeRestorePending.isEmpty else { return }
-        for (key, attempts) in wakeRestorePending {
-            guard var state = ports[key], state.away == .off || state.away == .mirrored else {
-                wakeRestorePending[key] = nil
-                continue
-            }
-            _ = undo(&state, id: state.displayID, quiet: attempts > 0)
-            ports[key] = state
-            if !state.isAway {
-                if attempts > 0 { log("display \(state.displayID.map(String.init) ?? "?") [\(key)] back on after \(attempts + 1) attempts") }
-                wakeRestorePending[key] = nil
-            } else if attempts + 1 >= wakeRestoreAttempts {
-                log("giving up turning display \(state.displayID.map(String.init) ?? "?") [\(key)] back on; run `display-follow restore`")
-                wakeRestorePending[key] = nil
-            } else {
-                wakeRestorePending[key] = attempts + 1
-            }
-        }
-        saveState()
-    }
-
     func tick() {
         reloadConfigIfChanged()
         guard followDisplaySleep() else { return }
-        retryWakeRestore()
         guard system.now >= resumeAt else { return }
         defer { saveState() }
+        let connected = system.externalPorts()
         var active = system.activeDisplayCount()
         var seen: [String: PortState] = [:]
-        let connected = system.externalPorts()
+        let onlineIDs = Set(connected.compactMap(\.displayID))
 
-        // A monitor that disappeared while off (unplugged, or its link dropped out briefly, e.g. in standby):
-        // turn it back on and forget it only once that works. A display left off and forgotten would stay
-        // off for good. A failed attempt can hang for seconds, so retry every `missingRetryInterval`.
-        for (port, var state) in ports where state.away == .off && !connected.contains(where: { $0.port == port }) {
+        // Ports that are gone (unplugged, or the link dropped out in standby).
+        for (port, var state) in ports where !connected.contains(where: { $0.port == port }) {
             let name = "\(state.identity?.name ?? "display") [\(port)]"
-            guard let id = state.displayID, !dryRun else {
-                log("\(name) disconnected while off; forgetting it")
+            guard state.away == .off, let id = state.displayID else {
+                if state.hooksAway { forgetHooks(&state, port: port) }
                 continue
             }
-            if let next = state.nextRestoreTry, system.now < next {
-                seen[port] = state
+            if onlineIDs.contains(id) {
+                // The ID now belongs to a display on another port: it was reused after a reconnect.
+                log("\(name) is gone and display \(id) is now on another port; forgetting it")
+                if state.hooksAway { forgetHooks(&state, port: port) }
                 continue
             }
-            if system.setEnabled(id, true) {
-                log("\(name) disconnected while off; turned display \(id) back on and forgot it")
+            // Turn it on and forget it only once that works: a display left off and forgotten stays off.
+            if restoreDisplay(&state, port: port, reason: "disconnected while off") {
+                if state.hooksAway { forgetHooks(&state, port: port) }
                 continue
             }
-            if state.nextRestoreTry == nil {
-                log("\(name) disconnected while off and display \(id) could not be turned on; retrying every \(Int(missingRetryInterval))s")
-            }
-            state.nextRestoreTry = system.now.addingTimeInterval(missingRetryInterval)
             seen[port] = state
         }
 
-        for port in connected {
-            var state = ports[port.port] ?? PortState(lastReply: system.now)
-            state.nextRestoreTry = nil
-            if let identity = port.identity { state.identity = identity }
-            if let id = port.displayID { state.displayID = id }
-            // Undone outside this tool (re-plugged, turned on, unmirrored): forget it. A dry run never changes anything.
-            if !dryRun, let id = port.displayID,
-               state.away == .off || (state.away == .mirrored && !system.isMirroring(id)) {
-                state.away = nil
-            }
-            defer { seen[port.port] = state }
-            // Still being turned back on after wake: judge its input once it is on.
-            if wakeRestorePending[port.port] != nil { continue }
-            guard let identity = state.identity else { continue }
-            guard let monitor = config.monitor(identity) else {
-                // Removed from the config while away: put the display back.
-                if state.isAway, undo(&state, id: state.displayID) { active += 1 }
-                continue
-            }
-            // Disabling or mirroring needs the display ID; hooks-only monitors don't.
-            let id = state.displayID
-            guard id != nil || monitor.action == .none || state.isAway else { continue }
-
-            let input = system.readInput(port: port.port)
-            let now = system.now
-            if input != nil { state.lastReply = now }
-            if state.isAway, Policy.ddcLost(lastReply: state.lastReply, now: now, timeout: config.ddcLossTimeout) {
-                log("\(monitor.name) [\(port.port)] silent over DDC for \(Int(config.ddcLossTimeout))s -> restoring it")
-                if undo(&state, id: id) { active += 1 }
-                continue
-            }
-            var decision = Policy.decide(input: input, macInput: monitor.macInput, isAway: state.isAway,
-                                         activeDisplays: active, needsOtherDisplay: monitor.action != .none)
-            if case .away(let other) = decision, Policy.settling(turnedOnAt: state.turnedOnAt, now: now) {
-                if !state.settleLogged {
-                    state.settleLogged = true
-                    log("\(monitor.name) [\(port.port)] reports input \(other) while settling after being turned on; ignoring")
-                }
-                decision = .none
-            }
-            switch state.confirmer.confirm(decision, required: config.confirmReads) {
-            case .none:
-                break
-            case .away(let input):
-                let label = "\(monitor.name) [\(port.port)] on input \(input)"
-                switch monitor.action {
-                case .disable:
-                    guard let id else { continue }
-                    log("\(label) -> disabling display \(id)")
-                    guard dryRun || system.setEnabled(id, false) else { log("could not disable display \(id)"); continue }
-                    state.away = .off
-                    active -= 1
-                case .mirror:
-                    guard let id, let target = system.mirrorTarget(for: id) else { continue }
-                    log("\(label) -> mirroring display \(id) onto \(target)")
-                    guard dryRun || system.setMirror(id, of: target) else { log("could not mirror display \(id)"); continue }
-                    state.away = .mirrored
-                case .none:
-                    log("\(label)")
-                    state.away = .hooksOnly
-                }
-                // Already away before a wake restore: the hook has run.
-                if !state.hooksAway {
-                    hook(monitor.onAway, event: "away", monitor: monitor.name, port: port.port, input: input)
-                    state.hooksAway = true
-                }
-            case .back(let input):
-                log("\(monitor.name) [\(port.port)] back on input \(input)")
-                if undo(&state, id: id) { active += 1 }
-                runBackHook(&state, monitor: monitor, port: port.port, input: input)
-            }
-            // Turned back on at wake and found on the Mac's input: nothing to undo, but `onBack` is still due.
-            if !state.isAway, state.hooksAway, let input, input == monitor.macInput {
-                log("\(monitor.name) [\(port.port)] back on input \(input)")
-                runBackHook(&state, monitor: monitor, port: port.port, input: input)
-            }
+        for snap in connected {
+            var state = ports[snap.port] ?? PortState(lastReply: system.now)
+            if let identity = snap.identity { state.identity = identity }
+            if let id = snap.displayID { state.displayID = id }
+            reconcile(&state, snap: snap, active: &active)
+            seen[snap.port] = state
         }
         ports = seen
     }
 
-    func hook(_ command: String?, event: String, monitor: String, port: String, input: Int) {
+    /// One port, one tick.
+    func reconcile(_ state: inout PortState, snap: PortSnapshot, active: inout Int) {
+        let now = system.now
+        let port = snap.port
+        let online = snap.displayID != nil
+        let name = "\(state.identity?.name ?? "display") [\(port)]"
+
+        // Observed on: whatever we thought, it is on now (our restore worked, or it was turned on elsewhere).
+        if online, state.away == .off {
+            state.away = nil
+            state.restore = nil
+        }
+        if online { state.restoreAfterWake = false }
+        if let id = snap.displayID, state.away == .mirrored, !system.isMirroring(id) { state.away = nil }
+
+        guard let identity = state.identity, let monitor = config.monitor(identity) else {
+            // Not (or no longer) in the config: put back whatever was done to it.
+            if !online, state.away == .off, restoreDisplay(&state, port: port, reason: "not in the config") { active += 1 }
+            if state.away == .mirrored, let id = state.displayID { unmirror(&state, id: id) }
+            if state.away == .hooksOnly { state.away = nil }
+            return
+        }
+
+        // Hooks-only monitors and monitors that are on need no display ID; the rest can't be acted on without one.
+        let input = system.readInput(port: port)
+        if input != nil { state.lastReply = now }
+
+        // Off: decide whether it has to come back on. A display found off that this run did not turn off
+        // (state lost, a restart in the middle of a change, a change reported as failed that happened anyway)
+        // is followed like one it did.
+        if !online, monitor.action == .disable, state.displayID != nil {
+            if state.away == nil {
+                log("\(name): display \(state.displayID!) is off; following it")
+                state.away = .off
+            }
+            let reason: String?
+            if let input, input == monitor.macInput { reason = "back on input \(input)" }
+            else if state.restoreAfterWake { reason = "turning back on after wake" }
+            else if Policy.ddcLost(lastReply: state.lastReply, now: now, timeout: config.ddcLossTimeout) {
+                reason = "silent over DDC for \(Int(config.ddcLossTimeout))s"
+            } else if nothingOnScreen() { reason = "no other display is on" }
+            else { reason = nil }
+            if let reason {
+                if restoreDisplay(&state, port: port, reason: reason) { active += 1 }
+            } else {
+                state.restore = nil
+            }
+            if !state.isAway, let input { runBackHookIfDue(&state, monitor: monitor, port: port, input: input) }
+            return
+        }
+
+        if state.away == .mirrored || state.away == .hooksOnly,
+           Policy.ddcLost(lastReply: state.lastReply, now: now, timeout: config.ddcLossTimeout) {
+            log("\(name) silent over DDC for \(Int(config.ddcLossTimeout))s -> restoring it")
+            if state.away == .mirrored, let id = state.displayID { unmirror(&state, id: id) } else { state.away = nil }
+            return
+        }
+
+        var decision = Policy.decide(input: input, macInput: monitor.macInput, isAway: state.isAway,
+                                     activeDisplays: active, needsOtherDisplay: monitor.action != .none)
+        if case .away(let other) = decision, Policy.settling(turnedOnAt: state.turnedOnAt, now: now) {
+            if !state.settleLogged {
+                state.settleLogged = true
+                log("\(name) reports input \(other) while settling after being turned on; ignoring")
+            }
+            decision = .none
+        }
+        switch state.confirmer.confirm(decision, required: config.confirmReads) {
+        case .none:
+            break
+        case .away(let input):
+            let label = "\(name) on input \(input)"
+            switch monitor.action {
+            case .disable:
+                guard let id = snap.displayID else { return }
+                log("\(label) -> disabling display \(id)")
+                // Recorded first, so a crash or a change reported as failed can't leave it off unrecorded.
+                state.away = .off
+                ports[port] = state
+                saveState()
+                guard dryRun || system.setEnabled(id, false) else {
+                    log("could not disable display \(id)")
+                    state.away = nil
+                    return
+                }
+                active -= 1
+            case .mirror:
+                guard let id = snap.displayID, let target = system.mirrorTarget(for: id) else { return }
+                log("\(label) -> mirroring display \(id) onto \(target)")
+                guard dryRun || system.setMirror(id, of: target) else { log("could not mirror display \(id)"); return }
+                state.away = .mirrored
+            case .none:
+                log(label)
+                state.away = .hooksOnly
+            }
+            if !state.hooksAway {
+                hook(monitor.onAway, event: "away", monitor: monitor.name, port: port, input: input)
+                state.hooksAway = true
+            }
+        case .back(let input):
+            log("\(name) back on input \(input)")
+            if state.away == .mirrored, let id = state.displayID { unmirror(&state, id: id) } else { state.away = nil }
+        }
+        if !state.isAway, let input { runBackHookIfDue(&state, monitor: monitor, port: port, input: input) }
+    }
+
+    /// Tries to turn the port's display back on, at most as often as the backoff allows, never giving up.
+    /// Returns true once it is on.
+    func restoreDisplay(_ state: inout PortState, port: String, reason: String) -> Bool {
+        guard let id = state.displayID else { return false }
+        let now = system.now
+        let name = "\(state.identity?.name ?? "display") [\(port)]"
+        if state.restore == nil {
+            state.restore = Restore(reason: reason, next: now)
+            log("\(name) \(reason) -> enabling display \(id)")
+        }
+        guard var restore = state.restore, now >= restore.next else { return false }
+        if dryRun || system.setEnabled(id, true) {
+            if restore.attempts > 0 { log("display \(id) [\(port)] back on after \(restore.attempts + 1) attempts") }
+            state.away = nil
+            state.restore = nil
+            state.restoreAfterWake = false
+            state.turnedOnAt = now
+            state.settleLogged = false
+            return true
+        }
+        restore.attempts += 1
+        let wait = Policy.restoreBackoff(attempts: restore.attempts)
+        restore.next = now.addingTimeInterval(wait)
+        state.restore = restore
+        if restore.attempts == 1 || restore.attempts % 10 == 0 {
+            log("could not enable display \(id) [\(port)] (attempt \(restore.attempts)); retrying in \(Int(wait))s")
+        }
+        return false
+    }
+
+    func unmirror(_ state: inout PortState, id: CGDirectDisplayID) {
+        log("stopping mirroring of display \(id)")
+        guard dryRun || system.setMirror(id, of: nil) else { log("could not stop mirroring display \(id)"); return }
+        state.away = nil
+    }
+
+    func hook(_ command: String?, event: String, monitor: String, port: String, input: Int?) {
         guard let command, !command.trimmingCharacters(in: .whitespaces).isEmpty else { return }
         guard !dryRun else { log("would run \(event) hook: \(command)"); return }
         system.runHook(command, event: event, monitor: monitor, port: port, input: input)
     }
 
-    func runBackHook(_ state: inout PortState, monitor: MonitorConfig, port: String, input: Int) {
-        guard state.hooksAway else { return }
+    /// `onBack` runs once the monitor shows the Mac and whatever was done is undone.
+    func runBackHookIfDue(_ state: inout PortState, monitor: MonitorConfig, port: String, input: Int) {
+        guard state.hooksAway, input == monitor.macInput else { return }
         hook(monitor.onBack, event: "back", monitor: monitor.name, port: port, input: input)
         state.hooksAway = false
     }
 
-    /// Reverses whatever was done when the monitor went away. Returns true if a display was turned back on.
-    func undo(_ state: inout PortState, id: CGDirectDisplayID?, quiet: Bool = false) -> Bool {
-        guard let id, state.away == .off || state.away == .mirrored else {
-            state.away = nil
-            return false
-        }
-        switch state.away {
-        case .off:
-            if !quiet { log("enabling display \(id)") }
-            guard dryRun || system.setEnabled(id, true) else {
-                if !quiet { log("could not enable display \(id)") }
-                return false
-            }
-            state.away = nil
-            state.turnedOnAt = system.now
-            state.settleLogged = false
-            return true
-        case .mirrored:
-            if !quiet { log("stopping mirroring of display \(id)") }
-            guard dryRun || system.setMirror(id, of: nil) else {
-                if !quiet { log("could not stop mirroring display \(id)") }
-                return false
-            }
-            state.away = nil
-            return false
-        case .hooksOnly, nil:
-            state.away = nil
-            return false
-        }
+    /// A monitor that is gone while away still gets its `onBack`, so hooks stay balanced (e.g. audio unmuted).
+    func forgetHooks(_ state: inout PortState, port: String) {
+        guard let monitor = state.identity.flatMap(config.monitor) else { state.hooksAway = false; return }
+        hook(monitor.onBack, event: "back", monitor: monitor.name, port: port, input: nil)
+        state.hooksAway = false
     }
 }
 

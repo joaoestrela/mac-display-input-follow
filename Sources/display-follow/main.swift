@@ -84,9 +84,9 @@ case "restore":
 case "on", "off":
     guard let id = args.first.flatMap(UInt32.init) else { fail("need a display id (see `display-follow list`)", code: 2) }
     guard Displays.setEnabled(id, command == "on") else { fail("could not turn display \(id) \(command)") }
-case "displays-awake":
+case "display-state":
     // Used by the watcher: a fresh process sees the current display state, a long-running one may not.
-    exit(Displays.anyAwake() ? 0 : 1)
+    exit(Displays.state().rawValue)
 
 case "version", "--version":
     print(version)
