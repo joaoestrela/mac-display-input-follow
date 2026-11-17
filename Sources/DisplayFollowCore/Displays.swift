@@ -1,4 +1,3 @@
-import AppKit
 import CoreGraphics
 
 public struct DisplayInfo {
@@ -21,12 +20,6 @@ public enum Displays {
                         vendor: CGDisplayVendorNumber(id), model: CGDisplayModelNumber(id),
                         serial: CGDisplaySerialNumber(id))
         }
-    }
-
-    /// Human-readable name, e.g. "MSI MAG322UPF".
-    public static func name(_ id: CGDirectDisplayID) -> String {
-        NSScreen.screens.first { ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value == id }?
-            .localizedName ?? "Display \(id)"
     }
 
     public static func activeCount() -> Int { online().filter(\.active).count }
