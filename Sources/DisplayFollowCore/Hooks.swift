@@ -9,9 +9,8 @@ public enum Hooks {
          "DISPLAY_FOLLOW_PORT": port, "DISPLAY_FOLLOW_INPUT": String(input)]
     }
 
-    static func run(_ command: String?, event: String, monitor: String, port: String, input: Int, dryRun: Bool) {
+    static func run(_ command: String?, event: String, monitor: String, port: String, input: Int) {
         guard let command, !command.trimmingCharacters(in: .whitespaces).isEmpty else { return }
-        guard !dryRun else { log("would run \(event) hook: \(command)"); return }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/sh")
         process.arguments = ["-c", command]

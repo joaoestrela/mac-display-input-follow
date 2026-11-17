@@ -3,7 +3,10 @@ import CoreGraphics
 import Foundation
 
 public final class Watcher {
+    let system: System
     let configURL: URL
+    /// Set when the config is given up front (offline checks): it is then never reloaded from disk.
+    let fixedConfig: Bool
     let dryRun: Bool
     var config = Config()
     var configDate: Date?
@@ -17,7 +20,7 @@ public final class Watcher {
         var identity: MonitorIdentity?
         var away: AwayMode?
         var confirmer = Confirmer()
-        var lastReply = Date()
+        var lastReply = Date.distantPast
         /// `onAway` ran and `onBack` has not yet. Survives the display being turned back on at wake.
         var hooksAway = false
         /// Set while the port is missing and the display is still off: when to try turning it on next.
@@ -39,8 +42,11 @@ public final class Watcher {
     let wakeRestoreAttempts = 30
     var signalSources: [DispatchSourceSignal] = []
 
-    public init(configURL: URL = Paths.config, dryRun: Bool = false) {
+    public init(system: System = RealSystem(), configURL: URL = Paths.config, config: Config? = nil, dryRun: Bool = false) {
+        self.system = system
         self.configURL = configURL
+        self.fixedConfig = config != nil
+        self.config = config ?? Config()
         self.dryRun = dryRun
     }
 
@@ -56,6 +62,7 @@ public final class Watcher {
 
     /// Picks up edits to the config file (including `display-follow setup`) without a restart.
     func reloadConfigIfChanged() {
+        guard !fixedConfig else { return }
         let date = ConfigStore.modificationDate(configURL)
         guard timer == nil || date != configDate else { return }
         configDate = date
@@ -76,20 +83,20 @@ public final class Watcher {
 
     /// Picks up displays a previous run turned off, so they are still followed (and turned back on).
     func adoptState() {
-        let state = StateStore.load()
+        let state = system.loadState()
         for (port, id) in state.off {
-            ports[port] = PortState(displayID: id, away: .off, hooksAway: true)
+            ports[port] = PortState(displayID: id, away: .off, lastReply: system.now, hooksAway: true)
             log("display \(id) [\(port)] was turned off by a previous run")
         }
         for (port, id) in state.mirrored {
-            ports[port] = PortState(displayID: id, away: .mirrored, hooksAway: true)
+            ports[port] = PortState(displayID: id, away: .mirrored, lastReply: system.now, hooksAway: true)
             log("display \(id) [\(port)] was mirrored by a previous run")
         }
     }
 
     func saveState() {
         guard !dryRun else { return }
-        StateStore.save(RuntimeState(off: ports.compactMapValues { $0.away == .off ? $0.displayID : nil },
+        system.saveState(RuntimeState(off: ports.compactMapValues { $0.away == .off ? $0.displayID : nil },
                                      mirrored: ports.compactMapValues { $0.away == .mirrored ? $0.displayID : nil }))
     }
 
@@ -118,7 +125,7 @@ public final class Watcher {
         }
         center.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] note in
             // A wake without graphics is a dark wake; the tick resumes once the screens are on.
-            guard Power.hasGraphics() != false else { return }
+            guard self?.system.hasGraphics() != false else { return }
             self?.resume(note.name.rawValue)
         }
     }
@@ -131,12 +138,12 @@ public final class Watcher {
         sleeping = true
         sawNoGraphics = false
         pausedFor = kind
-        pausedAt = Date()
+        pausedAt = system.now
         log("paused (\(reason))")
     }
 
     func resume(_ reason: String) {
-        resumeAt = Date().addingTimeInterval(config.wakeGrace)
+        resumeAt = system.now.addingTimeInterval(config.wakeGrace)
         for key in ports.keys {
             ports[key]?.confirmer = Confirmer()
             // Time asleep is not DDC silence.
@@ -164,8 +171,8 @@ public final class Watcher {
     /// A system-sleep pause ends only when it is back, so a dark wake never resumes the watcher or
     /// tries to turn displays on, and a full wake resumes it even without the wake notification.
     func followDisplaySleep() -> Bool {
-        let now = Date()
-        let graphics = Power.hasGraphics()
+        let now = system.now
+        let graphics = system.hasGraphics()
         if graphics == false {
             pause("no graphics: asleep or dark wake")
             sawNoGraphics = true
@@ -179,17 +186,17 @@ public final class Watcher {
             return true
         }
         if !sleeping {
-            asleepReads = Displays.anyAwake() ? 0 : asleepReads + 1
+            asleepReads = system.anyDisplayAwake() ? 0 : asleepReads + 1
             guard asleepReads >= 2, now >= nextFreshCheck else { return true }
             nextFreshCheck = now.addingTimeInterval(freshCheckInterval)
-            if freshAnyAwake() ?? false {
+            if system.freshAnyAwake() ?? false {
                 if !loggedStaleView { log("displays read asleep here but awake in a fresh process; not pausing"); loggedStaleView = true }
             } else {
                 pause("displays asleep", for: .displays)
             }
         } else if now >= nextFreshCheck {
             nextFreshCheck = now.addingTimeInterval(freshCheckInterval)
-            if freshAnyAwake() ?? Displays.anyAwake() {
+            if system.freshAnyAwake() ?? system.anyDisplayAwake() {
                 asleepReads = 0
                 resume("displays awake")
             }
@@ -203,23 +210,6 @@ public final class Watcher {
     var sawNoGraphics = false
     var nextFreshCheck = Date.distantPast
     var loggedStaleView = false
-
-    /// Asks a fresh copy of this binary whether any display is awake. nil if that could not be run.
-    func freshAnyAwake() -> Bool? {
-        guard let exe = Bundle.main.executableURL else { return nil }
-        let process = Process()
-        process.executableURL = exe
-        process.arguments = ["displays-awake"]
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
-        do { try process.run() } catch { return nil }
-        process.waitUntilExit()
-        switch process.terminationStatus {
-        case 0: return true
-        case 1: return false
-        default: return nil
-        }
-    }
 
     /// While asleep the other source may have gone away (or the monitor been powered off and on).
     /// A monitor left on an input with no signal never comes back to the Mac by itself, because a
@@ -261,11 +251,11 @@ public final class Watcher {
         reloadConfigIfChanged()
         guard followDisplaySleep() else { return }
         retryWakeRestore()
-        guard Date() >= resumeAt else { return }
+        guard system.now >= resumeAt else { return }
         defer { saveState() }
-        var active = Displays.activeCount()
+        var active = system.activeDisplayCount()
         var seen: [String: PortState] = [:]
-        let connected = Ports.external()
+        let connected = system.externalPorts()
 
         // A monitor that disappeared while off (unplugged, or its link dropped out briefly, e.g. in standby):
         // turn it back on and forget it only once that works. A display left off and forgotten would stay
@@ -276,29 +266,29 @@ public final class Watcher {
                 log("\(name) disconnected while off; forgetting it")
                 continue
             }
-            if let next = state.nextRestoreTry, Date() < next {
+            if let next = state.nextRestoreTry, system.now < next {
                 seen[port] = state
                 continue
             }
-            if Displays.setEnabled(id, true) {
+            if system.setEnabled(id, true) {
                 log("\(name) disconnected while off; turned display \(id) back on and forgot it")
                 continue
             }
             if state.nextRestoreTry == nil {
                 log("\(name) disconnected while off and display \(id) could not be turned on; retrying every \(Int(missingRetryInterval))s")
             }
-            state.nextRestoreTry = Date().addingTimeInterval(missingRetryInterval)
+            state.nextRestoreTry = system.now.addingTimeInterval(missingRetryInterval)
             seen[port] = state
         }
 
         for port in connected {
-            var state = ports[port.port] ?? PortState()
+            var state = ports[port.port] ?? PortState(lastReply: system.now)
             state.nextRestoreTry = nil
             if let identity = port.identity { state.identity = identity }
             if let id = port.displayID { state.displayID = id }
             // Undone outside this tool (re-plugged, turned on, unmirrored): forget it. A dry run never changes anything.
             if !dryRun, let id = port.displayID,
-               state.away == .off || (state.away == .mirrored && !Displays.isMirroring(id)) {
+               state.away == .off || (state.away == .mirrored && !system.isMirroring(id)) {
                 state.away = nil
             }
             defer { seen[port.port] = state }
@@ -314,8 +304,8 @@ public final class Watcher {
             let id = state.displayID
             guard id != nil || monitor.action == .none || state.isAway else { continue }
 
-            let input = port.readInput()
-            let now = Date()
+            let input = system.readInput(port: port.port)
+            let now = system.now
             if input != nil { state.lastReply = now }
             if state.isAway, Policy.ddcLost(lastReply: state.lastReply, now: now, timeout: config.ddcLossTimeout) {
                 log("\(monitor.name) [\(port.port)] silent over DDC for \(Int(config.ddcLossTimeout))s -> restoring it")
@@ -340,13 +330,13 @@ public final class Watcher {
                 case .disable:
                     guard let id else { continue }
                     log("\(label) -> disabling display \(id)")
-                    guard dryRun || Displays.setEnabled(id, false) else { log("could not disable display \(id)"); continue }
+                    guard dryRun || system.setEnabled(id, false) else { log("could not disable display \(id)"); continue }
                     state.away = .off
                     active -= 1
                 case .mirror:
-                    guard let id, let target = Displays.mirrorTarget(for: id) else { continue }
+                    guard let id, let target = system.mirrorTarget(for: id) else { continue }
                     log("\(label) -> mirroring display \(id) onto \(target)")
-                    guard dryRun || Displays.setMirror(id, of: target) else { log("could not mirror display \(id)"); continue }
+                    guard dryRun || system.setMirror(id, of: target) else { log("could not mirror display \(id)"); continue }
                     state.away = .mirrored
                 case .none:
                     log("\(label)")
@@ -354,7 +344,7 @@ public final class Watcher {
                 }
                 // Already away before a wake restore: the hook has run.
                 if !state.hooksAway {
-                    Hooks.run(monitor.onAway, event: "away", monitor: monitor.name, port: port.port, input: input, dryRun: dryRun)
+                    hook(monitor.onAway, event: "away", monitor: monitor.name, port: port.port, input: input)
                     state.hooksAway = true
                 }
             case .back(let input):
@@ -371,9 +361,15 @@ public final class Watcher {
         ports = seen
     }
 
+    func hook(_ command: String?, event: String, monitor: String, port: String, input: Int) {
+        guard let command, !command.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+        guard !dryRun else { log("would run \(event) hook: \(command)"); return }
+        system.runHook(command, event: event, monitor: monitor, port: port, input: input)
+    }
+
     func runBackHook(_ state: inout PortState, monitor: MonitorConfig, port: String, input: Int) {
         guard state.hooksAway else { return }
-        Hooks.run(monitor.onBack, event: "back", monitor: monitor.name, port: port, input: input, dryRun: dryRun)
+        hook(monitor.onBack, event: "back", monitor: monitor.name, port: port, input: input)
         state.hooksAway = false
     }
 
@@ -386,17 +382,17 @@ public final class Watcher {
         switch state.away {
         case .off:
             if !quiet { log("enabling display \(id)") }
-            guard dryRun || Displays.setEnabled(id, true) else {
+            guard dryRun || system.setEnabled(id, true) else {
                 if !quiet { log("could not enable display \(id)") }
                 return false
             }
             state.away = nil
-            state.turnedOnAt = Date()
+            state.turnedOnAt = system.now
             state.settleLogged = false
             return true
         case .mirrored:
             if !quiet { log("stopping mirroring of display \(id)") }
-            guard dryRun || Displays.setMirror(id, of: nil) else {
+            guard dryRun || system.setMirror(id, of: nil) else {
                 if !quiet { log("could not stop mirroring display \(id)") }
                 return false
             }

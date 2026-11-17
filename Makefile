@@ -19,7 +19,7 @@ $(BIN): $(CORE) Sources/display-follow/main.swift
 	@mkdir -p $(BUILD)
 	$(SWIFTC) $(SWIFTFLAGS) -module-name DisplayFollow -o $@ $^
 
-$(BUILD)/selfcheck: $(CORE) Sources/selfcheck/main.swift
+$(BUILD)/selfcheck: $(CORE) $(wildcard Sources/selfcheck/*.swift)
 	@mkdir -p $(BUILD)
 	$(SWIFTC) $(SWIFTFLAGS) -module-name SelfCheck -o $@ $^
 

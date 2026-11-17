@@ -1,4 +1,5 @@
-// Offline checks for the pure logic. Run with `swift run selfcheck` (exit 1 on failure).
+// Offline checks: pure logic, plus the watcher driven through a simulated machine (Simulation.swift).
+// Run with `make check` (exit 1 on failure).
 import Foundation
 
 var failures = 0
@@ -94,6 +95,8 @@ check(Ports.portName(inServicePath: "IOService:/AppleARMPE/arm-io/AppleT602xIO/d
 check(Ports.portName(inFramebufferPath: "IOService:/AppleARMPE/arm-io/AppleT602xIO/dispext1@14000000/IOMobileFramebufferShim") == "dispext1", "port from framebuffer path")
 check(Ports.portName(inFramebufferPath: "IOService:/AppleARMPE/arm-io/AppleT602xIO/disp0@88000000/IOMobileFramebufferShim") == nil, "built-in framebuffer")
 check(Ports.portName(inFramebufferPath: "IOService:/x/dispext10@1/IOMobileFramebufferShim") == "dispext10", "two-digit port")
+
+simulationChecks()
 
 if failures > 0 { print("\(failures) check(s) failed"); exit(1) }
 print("all checks passed")
