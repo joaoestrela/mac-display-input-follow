@@ -46,9 +46,11 @@ stop:
 
 restart: stop start
 
+# Stopping turns back on any display it turned off. The config is kept.
 uninstall: stop
 	rm -f $(PLIST) $(BINDIR)/display-follow $(BINDIR)/extdisplay
-	rm -rf $(HOME)/.local/share/display-follow
+	rm -rf "$${XDG_STATE_HOME:-$(HOME)/.local/state}/display-follow"
+	@echo "kept your config in $${XDG_CONFIG_HOME:-$(HOME)/.config}/display-follow"
 
 logs:
 	tail -f $(LOG)
