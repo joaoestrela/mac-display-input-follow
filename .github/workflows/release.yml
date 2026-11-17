@@ -26,7 +26,7 @@ jobs:
         run: |
           name="display-follow-${GITHUB_REF_NAME}-macos-arm64"
           mkdir -p "dist/$name"
-          cp .build/display-follow README.md "dist/$name/"
+          cp .build/display-follow README.md LICENSE scripts/install.sh "dist/$name/"
           cp launchd/com.display-follow.plist.in "dist/$name/"
           tar -C dist -czf "dist/$name.tar.gz" "$name"
           shasum -a 256 "dist/$name.tar.gz" | tee "dist/$name.tar.gz.sha256"
