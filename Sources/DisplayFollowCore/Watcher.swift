@@ -129,6 +129,7 @@ public final class Watcher {
     func pause(_ reason: String, for kind: PauseReason = .system) {
         guard !sleeping else { return }
         sleeping = true
+        sawNoGraphics = false
         pausedFor = kind
         pausedAt = Date()
         log("paused (\(reason))")
@@ -167,10 +168,12 @@ public final class Watcher {
         let graphics = Power.hasGraphics()
         if graphics == false {
             pause("no graphics: asleep or dark wake")
+            sawNoGraphics = true
             return false
         }
         if sleeping, pausedFor == .system {
-            guard graphics == true else { return false }
+            // Right after the will-sleep notification graphics still reads on: don't resume on that.
+            guard graphics == true, sawNoGraphics || now.timeIntervalSince(pausedAt) > systemPauseMinimum else { return false }
             asleepReads = 0
             resume("full wake")
             return true
@@ -195,6 +198,9 @@ public final class Watcher {
     }
 
     let freshCheckInterval: TimeInterval = 3
+    /// A system-sleep pause is ended by graphics being on only after graphics was seen off, or after this long.
+    let systemPauseMinimum: TimeInterval = 30
+    var sawNoGraphics = false
     var nextFreshCheck = Date.distantPast
     var loggedStaleView = false
 
