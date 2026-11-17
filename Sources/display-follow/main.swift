@@ -70,6 +70,9 @@ case "run":
         log("another display-follow watcher is running (lock \(SingleInstance.url.path)); exiting")
         exit(0)
     }
+    LogFile.rotateIfNeeded()
+    let rotation = Timer.scheduledTimer(withTimeInterval: 3600, repeats: true) { _ in LogFile.rotateIfNeeded() }
+    _ = rotation
     Watcher(dryRun: dryRun).run()
 case "list":
     let portByDisplay = Dictionary(Ports.external().compactMap { p in p.displayID.map { ($0, p.port) } },
