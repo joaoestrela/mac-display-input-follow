@@ -50,7 +50,7 @@ public enum Displays {
             CGCancelDisplayConfiguration(cfg)
             return false
         }
-        return CGCompleteDisplayConfiguration(cfg, .permanently) == .success
+        return CGCompleteDisplayConfiguration(cfg, .forSession) == .success
     }
 
     /// Mirrors `id` onto `target`, or stops mirroring when `target` is nil.
@@ -62,7 +62,7 @@ public enum Displays {
             CGCancelDisplayConfiguration(cfg)
             return false
         }
-        return CGCompleteDisplayConfiguration(cfg, .permanently) == .success
+        return CGCompleteDisplayConfiguration(cfg, .forSession) == .success
     }
 
     public static func isMirroring(_ id: CGDirectDisplayID) -> Bool { CGDisplayMirrorsDisplay(id) != kCGNullDirectDisplay }
