@@ -33,10 +33,17 @@ extension Policy {
         timeout > 0 && now.timeIntervalSince(lastReply) > timeout
     }
 
-    /// Right after a display is turned back on, the Mac's signal takes a few seconds to appear, and a
-    /// monitor with auto input-select can jump to another input meanwhile. Readings of another input
-    /// are ignored for this long, so the display isn't turned straight back off.
+    /// Right after a display is turned back on, or the Mac wakes, the Mac's signal takes a few seconds to
+    /// appear, and a monitor with auto input-select can jump to another input meanwhile. Readings of another
+    /// input are ignored until a port's settle time is over, so the display isn't turned straight back off.
     public static let settleAfterTurningOn: TimeInterval = 15
+    /// After a wake, counted from the end of `wakeGrace`.
+    public static let settleAfterWake: TimeInterval = 20
+
+    public static func settling(until: Date?, now: Date) -> Bool {
+        guard let until else { return false }
+        return now < until
+    }
 
     /// Seconds to wait before retrying to turn a display on after `attempts` failures: quick at first,
     /// then once a minute, for as long as it takes.

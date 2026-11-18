@@ -37,8 +37,9 @@ public final class Watcher {
         var lastReply: Date
         /// `onAway` ran and `onBack` has not yet.
         var hooksAway = false
-        /// When this tool last turned the display back on; see `Policy.settling`.
-        var turnedOnAt: Date?
+        /// Until when readings of another input are ignored (after turning the display on, or a wake);
+        /// see `Policy.settling`.
+        var settleUntil: Date?
         var settleLogged = false
         var restore: Restore?
         /// Turn the display back on regardless of input: set at wake (see `resume`).
@@ -192,6 +193,9 @@ public final class Watcher {
             // Time asleep is not DDC silence.
             ports[key]?.lastReply = resumeAt
             if ports[key]?.away == .off { ports[key]?.restoreAfterWake = true }
+            // The monitor may have jumped to another input while the Mac's signal was gone.
+            ports[key]?.settleUntil = resumeAt.addingTimeInterval(Policy.settleAfterWake)
+            ports[key]?.settleLogged = false
         }
         if sleeping { log("resuming in \(Int(config.wakeGrace))s (\(reason))") }
         activity = .running
@@ -386,10 +390,10 @@ public final class Watcher {
         if let next = state.nextChange, now < next { return }
         var decision = Policy.decide(input: input, macInput: monitor.macInput, isAway: state.isAway,
                                      activeDisplays: active, needsOtherDisplay: monitor.action != .none)
-        if case .away(let other) = decision, Policy.settling(turnedOnAt: state.turnedOnAt, now: now) {
+        if case .away(let other) = decision, Policy.settling(until: state.settleUntil, now: now) {
             if !state.settleLogged {
                 state.settleLogged = true
-                log("\(name) reports input \(other) while settling after being turned on; ignoring")
+                log("\(name) reports input \(other) while settling after being turned on or a wake; ignoring")
             }
             decision = .none
         }
@@ -471,7 +475,7 @@ public final class Watcher {
         state.away = nil
         state.restore = nil
         state.restoreAfterWake = false
-        state.turnedOnAt = system.now
+        state.settleUntil = system.now.addingTimeInterval(Policy.settleAfterTurningOn)
         state.settleLogged = false
     }
 
