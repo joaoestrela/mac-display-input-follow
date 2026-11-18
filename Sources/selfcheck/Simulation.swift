@@ -154,6 +154,27 @@ func simulationChecks() {
         run(w, fake, seconds: 20)
         check(fake.actions == ["off 3", "on 3", "off 3"], "sim: still on the other input after settling: off again")
     }
+    do {  // the monitor jumps to another input while the Mac sleeps or wakes: the display stays on
+        let (w, fake) = simulation()
+        run(w, fake, seconds: 3)
+        w.pause("will sleep")
+        fake.graphics = false
+        run(w, fake, seconds: 60)
+        fake.display.input = 15  // auto input-select found no signal from the Mac
+        fake.graphics = true
+        run(w, fake, seconds: 15)
+        check(fake.actions.isEmpty, "sim: input jump just after a wake is ignored")
+        fake.display.input = 17  // the Mac's signal is back and the monitor found it
+        run(w, fake, seconds: 30)
+        check(fake.actions.isEmpty && fake.display.online, "sim: display stays on through a wake bounce")
+        w.pause("will sleep")
+        fake.graphics = false
+        run(w, fake, seconds: 60)
+        fake.display.input = 15  // this time another computer really is on the other input
+        fake.graphics = true
+        run(w, fake, seconds: 40)
+        check(fake.actions == ["off 3"], "sim: other input still there after the wake settle: off")
+    }
     do {  // turning on fails for a long time: retries with backoff, never gives up
         let (w, fake) = simulation()
         fake.display.input = 15
